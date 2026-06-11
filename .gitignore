@@ -1,0 +1,39 @@
+# dependencies
+node_modules/
+.pnpm-store/
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# builds
+.next/
+out/
+dist/
+build/
+.turbo/
+
+# env & secrets
+.env
+.env.*
+!.env.example
+
+# prisma
+packages/db/prisma/generated/
+
+# logs & artifacts
+*.log
+logs/
+coverage/
+exports/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+*.swp
