@@ -1,0 +1,28 @@
+[project]
+name = "nexus-quant-service"
+version = "0.1.0"
+description = "Nexus Quant computation service: indicators, features, regime, backtesting, sizing, portfolio construction, capacity (numbers only - gate decisions live in packages/core)"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.34",
+    "pydantic>=2.11",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "httpx>=0.28",
+]
+# Quant stack lands in Phase 1+ (pinned in Docker; TA-Lib needs native lib):
+# pandas, numpy, TA-Lib, vectorbt, backtrader, scipy
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

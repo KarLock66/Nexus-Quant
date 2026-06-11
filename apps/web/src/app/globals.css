@@ -1,0 +1,56 @@
+@import "tailwindcss";
+
+@theme {
+  /* Institutional dark palette — Bloomberg-terminal-adjacent */
+  --color-surface-950: #07090d;
+  --color-surface-900: #0b0e14;
+  --color-surface-800: #11151d;
+  --color-surface-700: #1a202b;
+  --color-line: #232a37;
+
+  --color-accent-500: #22d3ee; /* cyan — primary accent */
+  --color-accent-600: #06b6d4;
+  --color-positive: #34d399; /* gains / buy */
+  --color-negative: #f87171; /* losses / sell */
+  --color-warning: #fbbf24;
+
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "Cascadia Code", "JetBrains Mono", Menlo, Consolas,
+    monospace;
+}
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  background: var(--color-surface-950);
+  color: #d4dae3;
+  font-family: var(--font-sans);
+  /* subtle radial wash behind the shell */
+  background-image: radial-gradient(
+      900px 450px at 85% -10%,
+      rgb(34 211 238 / 0.06),
+      transparent 60%
+    ),
+    radial-gradient(700px 350px at 0% 110%, rgb(52 211 153 / 0.04), transparent 60%);
+}
+
+/* Glassmorphism panel */
+.glass {
+  background: rgb(17 21 29 / 0.65);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgb(35 42 55 / 0.8);
+  border-radius: 0.75rem;
+}
+
+.glass-hover {
+  transition: border-color 150ms ease, background 150ms ease;
+}
+
+.glass-hover:hover {
+  border-color: rgb(34 211 238 / 0.35);
+  background: rgb(17 21 29 / 0.85);
+}

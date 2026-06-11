@@ -77,7 +77,8 @@ enum UserRole        { ADMIN ANALYST VIEWER }
 // ─────────────────────── Market Data ───────────────────────
 
 model MarketCandle {            // TimescaleDB hypertable on ts
-  id        String    @id @default(cuid())
+  // composite PK includes ts — Timescale requires the partition column
+  // in every unique constraint; also gives idempotent upserts for free
   exchange  Exchange
   symbol    String                    // canonical: BTC-USDT, ETH-PERP…
   assetType AssetType
@@ -90,34 +91,31 @@ model MarketCandle {            // TimescaleDB hypertable on ts
   volume    Decimal   @db.Decimal(28, 8)
   trades    Int?
 
-  @@unique([exchange, symbol, timeframe, ts])
+  @@id([exchange, symbol, timeframe, ts])
   @@index([symbol, timeframe, ts(sort: Desc)])
 }
 
 model FundingRate {
-  id        String   @id @default(cuid())
   exchange  Exchange
   symbol    String
   ts        DateTime
   rate      Decimal  @db.Decimal(12, 10)
   nextTs    DateTime?
 
-  @@unique([exchange, symbol, ts])
+  @@id([exchange, symbol, ts])
 }
 
 model OpenInterestSnapshot {
-  id        String   @id @default(cuid())
   exchange  Exchange
   symbol    String
   ts        DateTime
   openInterest      Decimal @db.Decimal(28, 8)
   openInterestValue Decimal @db.Decimal(28, 2)   // USD notional
 
-  @@unique([exchange, symbol, ts])
+  @@id([exchange, symbol, ts])
 }
 
 model OptionsChainSnapshot {   // Deribit-centric; one row per snapshot per underlying
-  id          String   @id @default(cuid())
   exchange    Exchange
   underlying  String                 // BTC | ETH
   ts          DateTime
@@ -129,11 +127,10 @@ model OptionsChainSnapshot {   // Deribit-centric; one row per snapshot per unde
   termStructure Json?                // [{expiry, atmIv}]
   chain        Json?                 // compressed strike-level detail
 
-  @@unique([exchange, underlying, ts])
+  @@id([exchange, underlying, ts])
 }
 
 model LiquiditySnapshot {       // depth/spread for liquidity scoring
-  id        String   @id @default(cuid())
   exchange  Exchange
   symbol    String
   ts        DateTime
@@ -141,7 +138,7 @@ model LiquiditySnapshot {       // depth/spread for liquidity scoring
   askDepthUsd  Decimal @db.Decimal(28, 2)
   spreadBps    Decimal @db.Decimal(10, 4)
 
-  @@unique([exchange, symbol, ts])
+  @@id([exchange, symbol, ts])
 }
 
 // ─────────────────── M5: Data Quality ───────────────────
