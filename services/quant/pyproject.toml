@@ -7,6 +7,14 @@ dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.34",
     "pydantic>=2.11",
+    # Phase 1: Stage-B statistical DQ + Feature Store computation.
+    # ADR-0001: numpy/scipy pinned EXACT for featureHash reproducibility.
+    # These versions must be resolved/locked inside the Python 3.12 Docker
+    # image (a hash-locked lockfile is the remaining infra step); the values
+    # below match the developed-against versions.
+    "numpy==2.4.6",
+    "pandas>=2.2",
+    "scipy==1.17.1",
 ]
 
 [project.optional-dependencies]
@@ -14,8 +22,8 @@ dev = [
     "pytest>=8.3",
     "httpx>=0.28",
 ]
-# Quant stack lands in Phase 1+ (pinned in Docker; TA-Lib needs native lib):
-# pandas, numpy, TA-Lib, vectorbt, backtrader, scipy
+# Remaining quant stack lands in Phase 3+ (pinned in Docker; TA-Lib needs
+# native lib): TA-Lib, vectorbt, backtrader
 
 [build-system]
 requires = ["hatchling"]

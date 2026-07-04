@@ -1,0 +1,76 @@
+name: bootstrap-reproducibility
+
+# ADR-0001 — GATED one-time/periodic bootstrap that produces the three pinned
+# values reproducibility depends on, computed ONLY in CI inside the pinned base:
+#   1. base image manifest-list digest -> docker/quant.Dockerfile
+#   2. hash-locked requirements.lock    (pip-compile --generate-hashes)
+#   3. golden baseline                  (golden.py generate, in-container)
+# Results are committed via PR (CI-bot provenance). The `reproducibility-bootstrap`
+# environment must require a human reviewer in repo settings.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-latest
+    environment: reproducibility-bootstrap
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Resolve base image manifest-list digest
+        id: digest
+        run: |
+          set -euo pipefail
+          D=$(docker buildx imagetools inspect python:3.12-slim --format '{{json .Manifest.Digest}}' | tr -d '"')
+          echo "value=$D" >> "$GITHUB_OUTPUT"
+          echo "resolved $D"
+
+      - name: Pin digest into Dockerfile
+        run: |
+          set -euo pipefail
+          sed -i -E "s#(FROM python:3.12-slim@)sha256:[A-Za-z0-9_]+#\1${{ steps.digest.outputs.value }}#" docker/quant.Dockerfile
+          grep -nE '^FROM ' docker/quant.Dockerfile
+
+      - name: Generate hash-locked dependency lock (in pinned base, network on)
+        run: |
+          set -euo pipefail
+          docker run --rm -v "${{ github.workspace }}/services/quant":/w -w /w \
+            "python:3.12-slim@${{ steps.digest.outputs.value }}" sh -c \
+            'pip install --no-cache-dir "pip==24.3.1" "pip-tools==7.4.1" && \
+             pip-compile --quiet --generate-hashes --allow-unsafe --strip-extras -o requirements.lock pyproject.toml'
+
+      - name: Build deterministic image
+        run: docker buildx build --load -f docker/quant.Dockerfile -t quant:bootstrap .
+
+      - name: Generate golden baseline INSIDE container only
+        run: |
+          set -euo pipefail
+          docker run --rm --network none quant:bootstrap python tools/golden.py generate \
+            > services/quant/goldens/core-technical-v1.golden.json
+          printf '\n' >> services/quant/goldens/core-technical-v1.golden.json
+          echo "golden:"; cat services/quant/goldens/core-technical-v1.golden.json
+
+      - name: Open PR with pinned digest + lock + golden
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git config user.name  "nexus-ci[bot]"
+          git config user.email "nexus-ci[bot]@users.noreply.github.com"
+          BR="bootstrap/reproducibility-${{ github.run_id }}"
+          git checkout -b "$BR"
+          git add docker/quant.Dockerfile \
+                  services/quant/requirements.lock \
+                  services/quant/goldens/core-technical-v1.golden.json
+          git commit -m "chore(repro): bootstrap ADR-0001 pins (base digest + locked deps + golden)"
+          git push origin "$BR"
+          gh pr create --base main --head "$BR" \
+            --title "Bootstrap ADR-0001 reproducibility pins" \
+            --body "Digest-pinned base, hash-locked requirements.lock, and CI-generated golden baseline. Generated inside the pinned container; do not edit by hand."

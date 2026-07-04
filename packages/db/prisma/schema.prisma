@@ -19,12 +19,19 @@ enum Exchange {
   BINANCE
   DERIBIT
   BYBIT
+  DEMO // deterministic synthetic connector — demo data is namespaced at the type level
 }
 
 enum AssetType {
   SPOT
   PERP
   OPTION
+}
+
+// Aggressor side of a trade print (taker direction), as published by the venue.
+enum TradeSide {
+  BUY
+  SELL
 }
 
 enum Timeframe {
@@ -42,6 +49,13 @@ enum SignalState {
   NEUTRAL
   SELL
   STRONG_SELL
+}
+
+// M1 Signal Engine (Phase 3) — deterministic decision space.
+enum SignalDecision {
+  LONG
+  SHORT
+  FLAT
 }
 
 enum SignalStatus {
@@ -79,6 +93,27 @@ enum AgentType {
   RISK
   OPTIONS
   GOVERNANCE
+}
+
+enum OptionType {
+  CALL
+  PUT
+}
+
+// Long/short ratio scopes as published by Binance/Bybit (Deribit has no LSR endpoint)
+enum LsRatioScope {
+  GLOBAL_ACCOUNTS
+  TOP_TRADER_ACCOUNTS
+  TOP_TRADER_POSITIONS
+}
+
+// Feature Store domains — every FeatureSetDefinition belongs to exactly one
+enum FeatureDomain {
+  TECHNICAL
+  OPTIONS
+  FLOW
+  REGIME
+  RISK
 }
 
 enum DQStatus {
@@ -206,10 +241,30 @@ model OpenInterestSnapshot {
   ts                DateTime
   openInterest      Decimal  @db.Decimal(28, 8)
   openInterestValue Decimal  @db.Decimal(28, 2)
+  // OI delta vs the previous snapshot for (exchange, symbol) — computed once at
+  // ingestion (single source of truth; Flow features read it, never recompute).
+  oiDelta           Decimal? @db.Decimal(28, 8)
+  oiDeltaPct        Decimal? @db.Decimal(12, 6)
 
   @@id([exchange, symbol, ts])
 }
 
+// Long/Short positioning ratio (Binance + Bybit; Deribit does not publish one)
+model LongShortRatio {
+  exchange Exchange
+  symbol   String
+  scope    LsRatioScope
+  ts       DateTime
+  ratio    Decimal      @db.Decimal(12, 6) // long / short
+  longPct  Decimal?     @db.Decimal(8, 6)
+  shortPct Decimal?     @db.Decimal(8, 6)
+
+  @@id([exchange, symbol, scope, ts])
+  @@index([symbol, scope, ts(sort: Desc)])
+}
+
+// Chain-level aggregates per (exchange, underlying, snapshot time).
+// Strike-level detail lives in OptionContractSnapshot (first-class rows, not JSON).
 model OptionsChainSnapshot {
   exchange           Exchange
   underlying         String // BTC | ETH
@@ -219,10 +274,36 @@ model OptionsChainSnapshot {
   skew25d            Decimal? @db.Decimal(10, 6)
   putCallRatio       Decimal? @db.Decimal(10, 4)
   totalGammaExposure Decimal? @db.Decimal(28, 2)
-  termStructure      Json?
-  chain              Json?
+  termStructure      Json? // [{expiry, atmIv}]
+  contractCount      Int?
 
   @@id([exchange, underlying, ts])
+}
+
+// First-class option chain entity — one row per contract per snapshot.
+// NOTE: no Prisma relation to OptionsChainSnapshot: both are TimescaleDB
+// hypertables and Postgres cannot FK onto a hypertable — join logically on
+// (exchange, underlying, ts), which is shared by construction.
+model OptionContractSnapshot {
+  exchange     Exchange
+  underlying   String // BTC | ETH
+  ts           DateTime
+  expiry       DateTime
+  strike       Decimal    @db.Decimal(20, 8)
+  optionType   OptionType
+  iv           Decimal?   @db.Decimal(10, 6)
+  delta        Decimal?   @db.Decimal(10, 6)
+  gamma        Decimal?   @db.Decimal(16, 10)
+  theta        Decimal?   @db.Decimal(16, 6)
+  vega         Decimal?   @db.Decimal(16, 6)
+  openInterest Decimal?   @db.Decimal(28, 8)
+  volume       Decimal?   @db.Decimal(28, 8)
+  bid          Decimal?   @db.Decimal(20, 8)
+  ask          Decimal?   @db.Decimal(20, 8)
+  markPrice    Decimal?   @db.Decimal(20, 8)
+
+  @@id([exchange, underlying, ts, expiry, strike, optionType])
+  @@index([underlying, expiry, ts(sort: Desc)])
 }
 
 model LiquiditySnapshot {
@@ -234,6 +315,42 @@ model LiquiditySnapshot {
   spreadBps   Decimal  @db.Decimal(10, 4)
 
   @@id([exchange, symbol, ts])
+}
+
+// Phase 9 — raw trade prints (ticks). One row per venue trade; the venue tradeId
+// disambiguates trades that share a millisecond ts. `ts` is part of the PK so the
+// table can be a TimescaleDB hypertable (prisma/timescale.sql). Decimal at rest.
+model MarketTick {
+  exchange Exchange
+  symbol   String
+  ts       DateTime
+  tradeId  String // venue trade id (canonical string; disambiguates same-ts prints)
+  price    Decimal   @db.Decimal(20, 8)
+  size     Decimal   @db.Decimal(28, 8) // base-asset quantity
+  side     TradeSide // taker/aggressor side
+
+  @@id([exchange, symbol, ts, tradeId])
+  @@index([symbol, ts(sort: Desc)])
+}
+
+// Phase 9 — top-of-book + mark snapshots sampled from the live WS feed. One row
+// per (exchange, symbol, ts); `ts` is in the PK for the hypertable + idempotent
+// re-sampling within a slot. Optional top-N depth is retained as JSON for audit.
+model OrderbookSnapshot {
+  exchange    Exchange
+  symbol      String
+  ts          DateTime
+  bestBid     Decimal  @db.Decimal(20, 8)
+  bestAsk     Decimal  @db.Decimal(20, 8)
+  bestBidSize Decimal  @db.Decimal(28, 8)
+  bestAskSize Decimal  @db.Decimal(28, 8)
+  markPrice   Decimal? @db.Decimal(20, 8)
+  spreadBps   Decimal? @db.Decimal(10, 4)
+  bids        Json? // optional top-N depth: [[price, size], ...] (decimal strings)
+  asks        Json?
+
+  @@id([exchange, symbol, ts])
+  @@index([symbol, ts(sort: Desc)])
 }
 
 // ─────────────────── M5: Data Quality ───────────────────
@@ -253,6 +370,7 @@ model DataQualityReport {
 
   signals          Signal[]
   featureSnapshots FeatureSnapshot[]
+  engineSignals    EngineSignal[]
 
   @@index([exchange, symbol, timeframe, createdAt(sort: Desc)])
 }
@@ -260,11 +378,12 @@ model DataQualityReport {
 // ─────────────────── FS: Feature Store ───────────────────
 
 model FeatureSetDefinition {
-  id        String   @id @default(cuid())
+  id        String        @id @default(cuid())
   name      String
   version   Int
+  domain    FeatureDomain // TECHNICAL | OPTIONS | FLOW | REGIME | RISK
   spec      Json // declarative: indicators, params, windows
-  createdAt DateTime @default(now())
+  createdAt DateTime      @default(now())
   createdBy String
 
   snapshots FeatureSnapshot[]
@@ -288,6 +407,7 @@ model FeatureSnapshot {
 
   regimeSnapshots RegimeSnapshot[]
   signals         Signal[]
+  engineSignals   EngineSignal[]
 
   @@unique([exchange, symbol, timeframe, ts, featureSetId])
   @@index([symbol, timeframe, ts(sort: Desc)])
@@ -309,6 +429,24 @@ model RegimeSnapshot {
 
   @@unique([symbol, timeframe, ts])
   @@index([symbol, timeframe, ts(sort: Desc)])
+}
+
+// Empirical regime transition probabilities over a window — persisted for
+// future Monte Carlo path simulation and regime-conditional stress testing.
+// Computation lands with M8 (Phase 3); the demo seed ships a sample matrix.
+model RegimeTransitionMatrix {
+  id           String    @id @default(cuid())
+  createdAt    DateTime  @default(now())
+  symbol       String
+  timeframe    Timeframe
+  windowStart  DateTime
+  windowEnd    DateTime
+  method       String // empirical_frequency | laplace_smoothed ...
+  regimes      Json // ordered MarketRegime[] fixing row/col order
+  matrix       Json // row-major P(from -> to); each row sums to 1
+  sampleCounts Json // observed transition counts per cell (auditability)
+
+  @@index([symbol, timeframe, createdAt(sort: Desc)])
 }
 
 // ─────────────────── M1: Signals ───────────────────
@@ -358,6 +496,42 @@ model Signal {
   sizingCalcs PositionSizingCalc[]
 
   @@index([symbol, status, createdAt(sort: Desc)])
+}
+
+// ─────────────────── M1: Signal Engine (Phase 3) ───────────────────
+// First-class deterministic decision artifact — the Signal Engine's output for
+// one (FeatureSnapshot, StrategyVersion) pair. Reconstructable from persisted
+// lineage ALONE: featureHash (Python-authoritative) and datasetHash (TS-
+// authoritative) are stored VERBATIM and never recomputed on read; the decision
+// is reproduced by re-running the pure rule over the snapshot's persisted
+// feature values. Distinct from the richer M1 trading `Signal` (entries, gates,
+// R:R), which a later phase derives from an admitted EngineSignal.
+model EngineSignal {
+  id         String         @id @default(cuid())
+  createdAt  DateTime       @default(now())
+  symbol     String
+  side       SignalDecision // trend bias (pre-filter): LONG | SHORT | FLAT
+  decision   SignalDecision // final verdict after the volatility filter
+  confidence Decimal        @db.Decimal(5, 4) // 0..1, quantized to 4dp
+
+  // reproducibility lineage — no duplicated fields; hashes stored verbatim
+  strategyVersionId String
+  strategyVersion   StrategyVersion   @relation(fields: [strategyVersionId], references: [id])
+  // Resolved decision parameters in force at generation. Persisted so the
+  // signal is reconstructable from persisted artifacts ALONE (replay does not
+  // read the live, mutable StrategyVersion.parameters), and so post-generation
+  // strategy drift is detectable on read (lineage compares live vs persisted).
+  strategyParams    Json
+  featureSnapshotId String
+  featureSnapshot   FeatureSnapshot   @relation(fields: [featureSnapshotId], references: [id])
+  dqReportId        String
+  dqReport          DataQualityReport @relation(fields: [dqReportId], references: [id])
+  datasetHash       String // TS-authoritative (DataQualityReport), verbatim
+  featureHash       String // Python-authoritative (FeatureSnapshot), verbatim
+
+  // Determinism at rest: exactly one decision per (snapshot, strategy version).
+  @@unique([featureSnapshotId, strategyVersionId])
+  @@index([symbol, createdAt(sort: Desc)])
 }
 
 model SignalGateResult {
@@ -691,6 +865,7 @@ model StrategyVersion {
   createdBy String
 
   signals            Signal[]
+  engineSignals      EngineSignal[]
   backtests          Backtest[]
   calibrationReports CalibrationReport[]
 
@@ -757,4 +932,115 @@ model JobRun {
   detail    Json?
 
   @@index([job, startedAt(sort: Desc)])
+}
+
+// ─────────────────── Phase 9.6 — Operations Control Plane ───────────────────
+// Persisted operational alerts for the operator monitoring page (/ops). Purely
+// ADDITIVE: a dedicated ops table, never the sealed business `Alert` model. Each
+// row is deduplicated by `ruleId` while ACTIVE — a rule that keeps firing updates
+// `lastSeen` (not a new row); when the underlying condition clears, the active
+// row is RESOLVED (status flip + resolvedAt). `firstSeen`/`lastSeen`/`status`
+// give the operator the canonical "what failed / when did it start / is it still
+// happening" history without mutating any trading data.
+model OpsAlert {
+  id         String       @id @default(cuid())
+  ruleId     String // dedup key — stable rule identifier (e.g. "db.unreachable")
+  severity   RiskSeverity // reuses the platform severity enum (INFO|WARNING|CRITICAL|EMERGENCY)
+  message    String
+  status     String       @default("ACTIVE") // ACTIVE | RESOLVED
+  firstSeen  DateTime     @default(now())
+  lastSeen   DateTime     @default(now())
+  resolvedAt DateTime?
+  // Most recent human-readable context (probe detail / measured lag) for the row.
+  detail     String?
+
+  @@index([status, lastSeen(sort: Desc)])
+  @@index([ruleId, status])
+}
+
+// ─────────────────── Phase 9.7 — Production Control Plane ───────────────────
+// Additive WRITE-side of the control plane (Phase 9.6 was read-only). Five new
+// tables; no existing table/enum/column is altered. Severity reuses the existing
+// "RiskSeverity" enum; state/status columns are String with canonical values owned
+// by the @nexus/control package (mirrors the OpsAlert precedent). These persist the
+// operator-facing control state the worker enforces and the /control page reads.
+
+// Global kill switch (Section C) — a single authoritative row (id = "singleton").
+// The worker's control execution gate reads it every evaluation; the web kill/resume
+// endpoints upsert it. History is captured in ControlAuditLog (append-only).
+model ControlKillSwitch {
+  id        String    @id // always "singleton"
+  engaged   Boolean   @default(false)
+  actor     String? // who last engaged it
+  reason    String?
+  engagedAt DateTime?
+  resumedBy String?
+  resumedAt DateTime?
+  updatedAt DateTime  @updatedAt
+}
+
+// Runtime state machine transitions (Section A) — append-only. The current state is
+// the latest row; "duration in state" = now − latest.enteredAt.
+model RuntimeStateTransition {
+  id                  String   @id @default(cuid())
+  state               String // BOOTING|STARTING|HEALTHY|DEGRADED|PROTECTED|STOPPED|RECOVERING|FAILED
+  previousState       String?
+  reason              String
+  affectedComponents  Json // ControlComponent[]
+  enteredAt           DateTime @default(now())
+
+  @@index([enteredAt(sort: Desc)])
+}
+
+// Protection events (Section D) — deduped by ruleId while ACTIVE (OpsAlert pattern):
+// a rule that keeps firing updates lastSeen; when the condition clears the row is
+// RESOLVED. `incidentId` loosely links to the owning Incident (no FK, by convention).
+model ProtectionEvent {
+  id         String       @id @default(cuid())
+  ruleId     String // ProtectionRuleId (e.g. "database.unavailable")
+  component  String // ControlComponent
+  severity   RiskSeverity
+  detail     String?
+  status     String       @default("ACTIVE") // ACTIVE | RESOLVED
+  firstSeen  DateTime     @default(now())
+  lastSeen   DateTime     @default(now())
+  resolvedAt DateTime?
+  incidentId String?
+
+  @@index([status, lastSeen(sort: Desc)])
+  @@index([ruleId, status])
+}
+
+// Incident timeline (Section G) — opened when protection engages, resolved when
+// recovery verifies. Powers the chronological timeline with window filters.
+model Incident {
+  id                 String       @id @default(cuid())
+  type               String // originating ruleId or "multi"
+  severity           RiskSeverity
+  affectedComponents Json // ControlComponent[]
+  startedAt          DateTime     @default(now())
+  endedAt            DateTime?
+  durationSec        Int?
+  status             String       @default("OPEN") // OPEN | RESOLVED
+  recoveryOutcome    String? // VERIFIED | FAILED | MANUAL_RESUME | null
+  detail             String?
+
+  @@index([status, startedAt(sort: Desc)])
+  @@index([startedAt(sort: Desc)])
+}
+
+// Immutable operational audit trail (Section H) — APPEND-ONLY by construction (the
+// code never updates or deletes a row). Tracks kill/resume, protection events,
+// recovery events, manual actions, and every runtime state change.
+model ControlAuditLog {
+  id       String   @id @default(cuid())
+  ts       DateTime @default(now())
+  actor    String // operator id or "system:control"
+  action   String // KILL | RESUME | PROTECTION_ENGAGED | RECOVERY_VERIFIED | STATE_CHANGE | ...
+  reason   String?
+  result   String // ACCEPTED | REJECTED | OK | FAILED
+  metadata Json?
+
+  @@index([ts(sort: Desc)])
+  @@index([action, ts(sort: Desc)])
 }

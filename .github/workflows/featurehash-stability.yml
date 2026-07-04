@@ -1,0 +1,31 @@
+name: featurehash-stability
+
+# ADR-0001 §6 — final runtime-determinism proof. Builds the deterministic image
+# once and asserts 100 in-container hash emissions are byte-identical. Runs
+# nightly + on demand; the Phase 1 gate requires this to be GREEN on the last
+# N=10 scheduled runs before Phase 2 may begin.
+
+on:
+  schedule:
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  stability:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build deterministic image
+        run: docker buildx build --load -f docker/quant.Dockerfile -t quant:repro .
+      - name: 100x identical hash (HARD FAIL otherwise)
+        run: |
+          set -euo pipefail
+          docker run --rm --network none quant:repro sh -c \
+            'for i in $(seq 1 100); do python tools/golden.py emit; done' | sort -u > u.txt
+          cat u.txt
+          [ "$(wc -l < u.txt)" -eq 1 ] || { echo "HARD FAIL: non-deterministic over 100 runs"; exit 1; }
+          echo "100x stability OK"

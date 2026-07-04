@@ -19,20 +19,35 @@ test), seed script (users, risk limits, detector configs).
 
 ## Phase 1 — Data Layer: Ingestion + Data Quality Gateway (M5) + Feature Store (FS)
 
-**Scope:** Binance/Bybit/Deribit connectors (REST backfill + WebSocket live) for
-candles, funding, OI, options snapshots, liquidity; canonical normalization;
-Stage-A structural checks; Stage-B statistical checks in Python; DQ scoring +
-`DataQualityReport`; gap detection/repair jobs; **Feature Store: versioned
-`FeatureSetDefinition`s, point-in-time `FeatureSnapshot` computation with
-canonical `featureHash`, DQ ≥ 90 admission rule**; DQ + features API endpoints +
-System Monitoring page (connector status, DQ scores).
+> Amended per approved architecture review (2026-06-12): options first-class,
+> exchange priority Deribit > Binance > Bybit, flow data mandatory, feature
+> domains, agent prompt seeds, regime transition matrix persistence, Demo Mode.
 
-**Acceptance:** 2 years of BTC/ETH H1 candles backfilled with DQ score ≥ 90;
+**Scope:** connectors in priority order **Deribit (primary), Binance (secondary),
+Bybit (tertiary)** (REST backfill + WebSocket live) for candles, **funding rate,
+open interest + OI delta, long/short ratio (mandatory Phase 1 ingest set)**,
+**strike-level option chains (`OptionContractSnapshot`: expiry, strike, IV,
+delta/gamma/theta/vega, OI, volume, bid/ask) + chain aggregates**, liquidity;
+canonical normalization; Stage-A structural checks; Stage-B statistical checks in
+Python; DQ scoring + `DataQualityReport`; gap detection/repair jobs; **Feature
+Store organized into 5 domains (Technical, Options, Flow, Regime, Risk):
+versioned `FeatureSetDefinition`s, point-in-time `FeatureSnapshot` computation
+with canonical `featureHash`, DQ ≥ 90 admission rule**; `RegimeTransitionMatrix`
+persistence (computation lands Phase 3); seeded v1 prompt templates for the four
+M2 agents (distinct objectives); **Demo Mode: deterministic `DemoConnector`
+(seeded PRNG) through the same DQ pipeline + demo seed (sample option chains,
+signals, backtests) — repo runs end-to-end with no exchange credentials**; DQ +
+features + market-data API endpoints + System Monitoring page (connector status,
+DQ scores, demo banner).
+
+**Acceptance:** 2 years of BTC/ETH H1 candles (live or demo) with DQ score ≥ 90;
 synthetic corruption tests (injected gaps, duplicates, outliers) each produce
 correct deductions and a FAILED report; live stream survives reconnect with no
 duplicate rows (composite-unique upsert verified); identical inputs produce
 identical `featureHash` across two runs; snapshot computation against DQ < 90
-data is refused.
+data is refused; **`DEMO_MODE=true` with the same `DEMO_SEED` produces an
+identical dataset (hash-verified) on two machines with zero network access;
+option chain queries return strike-level greeks via SQL, no JSON parsing**.
 
 **Why first:** Priority 3 (data integrity) — nothing downstream is trustworthy
 without it; the Feature Store makes validated data the *only* feature source.

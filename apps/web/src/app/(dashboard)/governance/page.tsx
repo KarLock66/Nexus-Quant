@@ -1,22 +1,28 @@
-import { ModulePage } from "@/components/module-page";
+import { GovernanceConsole } from "@/components/governance-console";
 
 export const metadata = { title: "Strategy Governance" };
 
 export default function GovernancePage() {
   return (
-    <ModulePage
-      title="Strategy Governance"
-      module="M7"
-      phase="Phase 8"
-      description="Strategy registry with immutable versioning, dual approval workflows (backtest + deploy), and a complete audit trail. Every change records who, what, why, when — and requester can never equal reviewer."
-      widgets={[
-        { title: "Strategy Registry", detail: "All strategies with lifecycle status from DRAFT through RETIRED." },
-        { title: "Version Diffs", detail: "Parameter and logic diffs between any two immutable versions." },
-        { title: "Approval Queue", detail: "Backtest, deploy, parameter, AI-recommendation, and risk-mode approvals." },
-        { title: "Audit Trail", detail: "Filterable log with before/after JSON diffs and mandatory reasons." },
-        { title: "Mandatory Fields", detail: "Hypothesis, entry/exit logic, risk rules, failure conditions — schema-enforced." },
-        { title: "AI Proposals", detail: "Governance-agent proposals enter the same human approval queue as everything else." },
-      ]}
-    />
+    <div className="space-y-6">
+      <header className="space-y-1.5">
+        <div className="flex flex-wrap items-center gap-3">
+          <h1 className="text-xl font-semibold text-white">Strategy Governance</h1>
+          <span className="rounded-full border border-(--color-line) bg-(--color-surface-800) px-2.5 py-0.5 font-mono text-[10px] uppercase tracking-wider text-(--color-accent-500)">
+            M7
+          </span>
+          <span className="rounded-full border border-(--color-line) px-2.5 py-0.5 font-mono text-[10px] uppercase tracking-wider text-slate-500">
+            Phase 8
+          </span>
+        </div>
+        <p className="max-w-3xl text-sm leading-relaxed text-slate-400">
+          Strategy registry with immutable versioning, dual approval workflows, and a complete
+          audit trail — read from persisted truth (Strategy, StrategyVersion, ApprovalRequest,
+          AuditLog). Every change records who, what, why, when; requester can never equal reviewer.
+        </p>
+      </header>
+
+      <GovernanceConsole />
+    </div>
   );
 }

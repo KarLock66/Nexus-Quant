@@ -54,3 +54,15 @@ body {
   border-color: rgb(34 211 238 / 0.35);
   background: rgb(17 21 29 / 0.85);
 }
+
+/* Respect the OS-level reduced-motion preference: freeze the pulse skeletons
+   and collapse transitions to instant. Layout and content are unaffected. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

@@ -1,0 +1,21 @@
+name: base-image-drift
+
+# ADR-0001 §2 — scheduled base-image digest drift detector. Hard-fails if the
+# upstream python:3.12-slim manifest list has moved away from the pinned digest,
+# forcing a deliberate, reviewed re-pin (bootstrap PR + golden re-validation).
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - run: bash services/quant/tools/verify_base_digest.sh

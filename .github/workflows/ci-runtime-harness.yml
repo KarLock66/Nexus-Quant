@@ -1,0 +1,149 @@
+name: ci-runtime-harness
+
+# CI Runtime Execution Harness — boots the full stack against a real Postgres +
+# Redis and validates end-to-end correctness under real execution conditions:
+# concurrent pipeline ticks (no duplicate writes), SIGKILL crash + restart
+# idempotency, SSE Last-Event-ID reconnect consistency, replay determinism, and
+# cursor/offset pagination consistency. Deterministic, fail-closed assertions.
+#
+# Postgres + Redis run as GitHub Actions `services` (job starts only once they are
+# health-gated). The worker and web server are spawned by the harness itself so it
+# can SIGKILL the worker and own the web lifecycle.
+
+on:
+  workflow_dispatch:
+    inputs:
+      phase9_live:
+        description: "Run the Phase 9 seal against LIVE Deribit + Binance feeds (network). Off = deterministic offline mode."
+        type: boolean
+        default: false
+  pull_request:
+  push:
+    branches:
+      - remediation/step8-featurehash-reproducibility
+
+permissions:
+  contents: read
+
+jobs:
+  runtime-harness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    services:
+      postgres:
+        image: timescale/timescaledb:latest-pg16
+        env:
+          POSTGRES_USER: nexus
+          POSTGRES_PASSWORD: nexus_dev_password
+          POSTGRES_DB: nexus_quant
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U nexus -d nexus_quant"
+          --health-interval 3s
+          --health-timeout 3s
+          --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 3s
+          --health-timeout 3s
+          --health-retries 20
+
+    env:
+      DATABASE_URL: postgresql://nexus:nexus_dev_password@localhost:5432/nexus_quant
+      REDIS_URL: redis://localhost:6379
+      NEXT_TELEMETRY_DISABLED: "1"
+      HARNESS_WEB_PORT: "3000"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Prisma client
+        run: pnpm db:generate
+
+      # Build everything: worker needs dist/index.js for the SIGKILL crash test,
+      # web needs a production build for `next start` (SSE + pagination phases).
+      - name: Build all packages
+        run: pnpm -r build
+
+      - name: Apply committed migrations to the real database
+        run: pnpm --filter @nexus/db migrate:deploy
+
+      - name: Run CI Runtime Execution Harness
+        # DEMO_MODE=true is belt-and-suspenders: the composed phases now pass
+        # demoBootstrap:true EXPLICITLY (self-owning; see services/workers/src/ci/*),
+        # so the harness no longer depends on this env. It is exported anyway for
+        # parity with the SIGKILL-restart worker (Phase 2 forces it) and to make the
+        # demo-lineage intent of this job explicit on the runner. The web read model
+        # ignores it (rows are labeled by origin, never filtered), so HTTP phases are
+        # unaffected.
+        env:
+          DEMO_MODE: "true"
+        run: pnpm --filter @nexus/workers ci:harness
+
+  # ── Phase 9 — Real Market Data Integration seal (gated; needs the quant image) ──
+  # Manual-only: the quant Feature Store is required (DQ Stage-B + /features/compute)
+  # and is built from the digest-pinned, TA-Lib image, so this runs via docker
+  # compose rather than GH `services`. Offline (deterministic DEMO connector) by
+  # default; set phase9_live=true to seal against the real Deribit + Binance feeds.
+  phase9-seal:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    env:
+      DATABASE_URL: postgresql://nexus:nexus_dev_password@localhost:5432/nexus_quant
+      REDIS_URL: redis://localhost:6379
+      QUANT_SERVICE_URL: http://localhost:8000
+      NEXT_TELEMETRY_DISABLED: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Prisma client
+        run: pnpm db:generate
+
+      - name: Build all packages
+        run: pnpm -r build
+
+      - name: Bring up infra (postgres + redis + quant)
+        run: docker compose -f docker/docker-compose.ci.yml up -d --build --wait
+
+      - name: Apply committed migrations + Timescale registration
+        run: |
+          pnpm --filter @nexus/db migrate:deploy
+          docker compose -f docker/docker-compose.ci.yml exec -T postgres \
+            psql "postgresql://nexus:nexus_dev_password@localhost:5432/nexus_quant" \
+            -f - < packages/db/prisma/timescale.sql
+
+      - name: Run Phase 9 runtime seal
+        env:
+          PHASE9_LIVE: ${{ inputs.phase9_live && '1' || '0' }}
+        run: pnpm --filter @nexus/ingestion ci:seal-phase9
+
+      - name: Tear down infra
+        if: always()
+        run: docker compose -f docker/docker-compose.ci.yml down -v

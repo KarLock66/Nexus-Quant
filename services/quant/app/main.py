@@ -1,7 +1,7 @@
-"""FastAPI entrypoint (Phase 0 skeleton).
+"""FastAPI entrypoint.
 
 Routers land per phase:
-  Phase 1: /dq/statistical, /features/compute
+  Phase 1: /dq/statistical, /features/compute  (live)
   Phase 2: /sizing/calculate
   Phase 3: /indicators/compute, /regime/classify
   Phase 4: /backtest, /walkforward, /montecarlo, /stress, /metrics/compute
@@ -13,6 +13,8 @@ from datetime import datetime, timezone
 from fastapi import FastAPI
 
 from app import __version__
+from app.api.dq import router as dq_router
+from app.api.features import router as features_router
 
 app = FastAPI(
     title="Nexus Quant Service",
@@ -22,6 +24,21 @@ app = FastAPI(
         "Network-isolated; returns numbers, never decisions."
     ),
 )
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from fastapi import Request
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    print("❌ VALIDATION ERROR:", exc.errors())
+    return JSONResponse(
+        status_code=422,
+        content={"detail": exc.errors()}
+    )
+
+app.include_router(dq_router)
+app.include_router(features_router)
 
 
 @app.get("/health")

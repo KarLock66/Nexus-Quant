@@ -1,4 +1,5 @@
-import { Sidebar } from "@/components/sidebar";
+import { MobileNav, Sidebar } from "@/components/sidebar";
+import { HeaderStatus } from "@/components/header-status";
 
 export default function DashboardLayout({
   children,
@@ -7,18 +8,24 @@ export default function DashboardLayout({
 }) {
   return (
     <div>
+      <a
+        href="#main"
+        className="sr-only focus:not-sr-only focus:absolute focus:left-2 focus:top-2 focus:z-50 focus:rounded-md focus:bg-(--color-surface-800) focus:px-3 focus:py-2 focus:text-sm focus:text-white"
+      >
+        Skip to content
+      </a>
       <Sidebar />
-      <div className="pl-60">
-        <header className="sticky top-0 z-10 flex h-14 items-center justify-between border-b border-(--color-line) bg-(--color-surface-950)/80 px-6 backdrop-blur-xl">
-          <div className="font-mono text-[11px] uppercase tracking-widest text-slate-500">
-            BTC · ETH — spot / perp / options
+      <div className="lg:pl-60">
+        <header className="sticky top-0 z-10 flex h-14 items-center justify-between gap-3 border-b border-(--color-line) bg-(--color-surface-950)/80 px-4 backdrop-blur-xl sm:px-6">
+          <div className="flex items-center gap-3">
+            <MobileNav />
+            <div className="hidden font-mono text-[11px] uppercase tracking-widest text-slate-500 sm:block">
+              BTC · ETH — spot / perp / options
+            </div>
           </div>
-          <div className="flex items-center gap-2 font-mono text-[11px] uppercase tracking-widest">
-            <span className="inline-block h-1.5 w-1.5 rounded-full bg-(--color-positive)" />
-            <span className="text-slate-400">risk mode: NORMAL</span>
-          </div>
+          <HeaderStatus />
         </header>
-        <main className="mx-auto max-w-7xl p-6">{children}</main>
+        <main id="main" className="mx-auto max-w-7xl p-4 sm:p-6">{children}</main>
       </div>
     </div>
   );

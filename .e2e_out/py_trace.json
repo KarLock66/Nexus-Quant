@@ -1,0 +1,249 @@
+{
+  "trace_id": "53ef9e24-8874-43ba-b686-769fa3e5d5b4",
+  "dq": {
+    "A": {
+      "request_bytes_len": 43937,
+      "ohlcv_types": {
+        "close": "str",
+        "open": "str",
+        "high": "str",
+        "low": "str",
+        "volume": "str"
+      },
+      "raw_response_bytes_len": 633,
+      "response_keys": [
+        "checks"
+      ],
+      "live_checks": [
+        {
+          "check": "price_outliers",
+          "passed": true,
+          "deduction": 0.0,
+          "detail": "299 returns analyzed, 0 outlier(s) with |modified z| > 10 (worst 1.6)"
+        },
+        {
+          "check": "volume_anomaly",
+          "passed": true,
+          "deduction": 0.0,
+          "detail": "300 volumes analyzed, 0 anomaly(ies) with |modified z| > 10 on log1p scale (worst 1.3)"
+        },
+        {
+          "check": "distribution_drift",
+          "passed": true,
+          "deduction": 0.0,
+          "detail": "KS two-sample over 149+150 returns: statistic=0.0769, pvalue=7.25e-01 (drift iff statistic > 0.35 and pvalue < 1e-06)"
+        },
+        {
+          "check": "cross_exchange_divergence",
+          "passed": true,
+          "deduction": 0.0,
+          "detail": "no reference closes provided \u2014 divergence not assessable"
+        }
+      ],
+      "direct_checks": [
+        {
+          "check": "price_outliers",
+          "passed": true,
+          "deduction": 0,
+          "detail": "299 returns analyzed, 0 outlier(s) with |modified z| > 10 (worst 1.6)"
+        },
+        {
+          "check": "volume_anomaly",
+          "passed": true,
+          "deduction": 0,
+          "detail": "300 volumes analyzed, 0 anomaly(ies) with |modified z| > 10 on log1p scale (worst 1.3)"
+        },
+        {
+          "check": "distribution_drift",
+          "passed": true,
+          "deduction": 0,
+          "detail": "KS two-sample over 149+150 returns: statistic=0.0769, pvalue=7.25e-01 (drift iff statistic > 0.35 and pvalue < 1e-06)"
+        },
+        {
+          "check": "cross_exchange_divergence",
+          "passed": true,
+          "deduction": 0,
+          "detail": "no reference closes provided \u2014 divergence not assessable"
+        }
+      ]
+    },
+    "B": {
+      "request_bytes_len": 43941,
+      "ohlcv_types": {
+        "close": "str",
+        "open": "str",
+        "high": "str",
+        "low": "str",
+        "volume": "str"
+      },
+      "raw_response_bytes_len": 636,
+      "response_keys": [
+        "checks"
+      ],
+      "live_checks": [
+        {
+          "check": "price_outliers",
+          "passed": false,
+          "deduction": 2.0,
+          "detail": "299 returns analyzed, 1 outlier(s) with |modified z| > 10 (worst 341.4)"
+        },
+        {
+          "check": "volume_anomaly",
+          "passed": true,
+          "deduction": 0.0,
+          "detail": "300 volumes analyzed, 0 anomaly(ies) with |modified z| > 10 on log1p scale (worst 1.3)"
+        },
+        {
+          "check": "distribution_drift",
+          "passed": true,
+          "deduction": 0.0,
+          "detail": "KS two-sample over 149+150 returns: statistic=0.0702, pvalue=8.16e-01 (drift iff statistic > 0.35 and pvalue < 1e-06)"
+        },
+        {
+          "check": "cross_exchange_divergence",
+          "passed": true,
+          "deduction": 0.0,
+          "detail": "no reference closes provided \u2014 divergence not assessable"
+        }
+      ],
+      "direct_checks": [
+        {
+          "check": "price_outliers",
+          "passed": false,
+          "deduction": 2,
+          "detail": "299 returns analyzed, 1 outlier(s) with |modified z| > 10 (worst 341.4)"
+        },
+        {
+          "check": "volume_anomaly",
+          "passed": true,
+          "deduction": 0,
+          "detail": "300 volumes analyzed, 0 anomaly(ies) with |modified z| > 10 on log1p scale (worst 1.3)"
+        },
+        {
+          "check": "distribution_drift",
+          "passed": true,
+          "deduction": 0,
+          "detail": "KS two-sample over 149+150 returns: statistic=0.0702, pvalue=8.16e-01 (drift iff statistic > 0.35 and pvalue < 1e-06)"
+        },
+        {
+          "check": "cross_exchange_divergence",
+          "passed": true,
+          "deduction": 0,
+          "detail": "no reference closes provided \u2014 divergence not assessable"
+        }
+      ]
+    },
+    "C": {
+      "request_bytes_len": 44082,
+      "ohlcv_types": {
+        "close": "str",
+        "open": "str",
+        "high": "str",
+        "low": "str",
+        "volume": "str"
+      },
+      "raw_response_bytes_len": 633,
+      "response_keys": [
+        "checks"
+      ],
+      "live_checks": [
+        {
+          "check": "price_outliers",
+          "passed": true,
+          "deduction": 0.0,
+          "detail": "300 returns analyzed, 0 outlier(s) with |modified z| > 10 (worst 1.6)"
+        },
+        {
+          "check": "volume_anomaly",
+          "passed": true,
+          "deduction": 0.0,
+          "detail": "301 volumes analyzed, 0 anomaly(ies) with |modified z| > 10 on log1p scale (worst 1.3)"
+        },
+        {
+          "check": "distribution_drift",
+          "passed": true,
+          "deduction": 0.0,
+          "detail": "KS two-sample over 150+150 returns: statistic=0.0733, pvalue=8.16e-01 (drift iff statistic > 0.35 and pvalue < 1e-06)"
+        },
+        {
+          "check": "cross_exchange_divergence",
+          "passed": true,
+          "deduction": 0.0,
+          "detail": "no reference closes provided \u2014 divergence not assessable"
+        }
+      ],
+      "direct_checks": [
+        {
+          "check": "price_outliers",
+          "passed": true,
+          "deduction": 0,
+          "detail": "300 returns analyzed, 0 outlier(s) with |modified z| > 10 (worst 1.6)"
+        },
+        {
+          "check": "volume_anomaly",
+          "passed": true,
+          "deduction": 0,
+          "detail": "301 volumes analyzed, 0 anomaly(ies) with |modified z| > 10 on log1p scale (worst 1.3)"
+        },
+        {
+          "check": "distribution_drift",
+          "passed": true,
+          "deduction": 0,
+          "detail": "KS two-sample over 150+150 returns: statistic=0.0733, pvalue=8.16e-01 (drift iff statistic > 0.35 and pvalue < 1e-06)"
+        },
+        {
+          "check": "cross_exchange_divergence",
+          "passed": true,
+          "deduction": 0,
+          "detail": "no reference closes provided \u2014 divergence not assessable"
+        }
+      ]
+    }
+  },
+  "features": {
+    "request_bytes_len": 36304,
+    "ohlcv_types": {
+      "close": "str",
+      "open": "str",
+      "high": "str",
+      "low": "str",
+      "volume": "str"
+    },
+    "raw_response_bytes_len": 537,
+    "response_keys": [
+      "as_of_ts",
+      "dq_report_id",
+      "featureHash",
+      "feature_set",
+      "features",
+      "input_candle_count",
+      "version"
+    ],
+    "feature_keys": [
+      "atr_14",
+      "donchian_lower_20",
+      "donchian_mid_20",
+      "donchian_upper_20",
+      "ema_20",
+      "ema_200",
+      "ema_50",
+      "realized_vol_30",
+      "rsi_14",
+      "volume_zscore_100"
+    ],
+    "live_featureHash": "0d03a30f8c24aaf98b7474fc5f7ab6b9698a92f9b3056d78ffaa715e77d334e1",
+    "direct_featureHash": "0d03a30f8c24aaf98b7474fc5f7ab6b9698a92f9b3056d78ffaa715e77d334e1",
+    "computed_features": {
+      "ema_20": 112.25421820107613,
+      "ema_50": 111.0879333138567,
+      "ema_200": 105.01280243776259,
+      "rsi_14": 49.62666107439981,
+      "atr_14": 0.6236639289066551,
+      "realized_vol_30": 0.005217455884955064,
+      "volume_zscore_100": 1.5929734878867992,
+      "donchian_upper_20": 113.97688748,
+      "donchian_lower_20": 110.60606604,
+      "donchian_mid_20": 112.29147676
+    }
+  }
+}

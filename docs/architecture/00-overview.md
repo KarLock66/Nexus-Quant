@@ -5,9 +5,14 @@
 ## 1. Mission
 
 An explainable, deterministic, risk-first quantitative intelligence platform for BTC/ETH
-spot, perpetual futures, and options across Binance, Deribit, and Bybit. The platform
-analyzes, signals, evaluates, tests, and monitors. It never trades. The human is the
-final decision maker.
+spot, perpetual futures, and options across Deribit (primary), Binance (secondary), and
+Bybit (tertiary). Crypto options are first-class data citizens: strike-level chains with
+full greeks, not an extension of spot market data. The platform analyzes, signals,
+evaluates, tests, and monitors. It never trades. The human is the final decision maker.
+
+The repository doubles as a public portfolio: **Demo Mode** (`DEMO_MODE=true`) runs the
+full platform on a deterministic synthetic data connector — sample market data, option
+chains, signals, and backtests — with zero exchange credentials or network access.
 
 ## 2. Architectural Principles
 
@@ -43,7 +48,7 @@ The seven engines map onto five deployable services plus shared packages:
 
 1. **`apps/web`** — Next.js 15 (App Router). UI + BFF API (`/api/v1/*`), SSE streaming, auth, governance workflows, exports.
 2. **`services/quant`** — Python 3.12 FastAPI. Indicators (TA-Lib), regime detection, backtesting (VectorBT primary, Backtrader for event-driven validation), walk-forward, Monte Carlo, stress tests, position-sizing math, statistical DQ checks (drift, outliers). Stateless: reads Postgres/Redis, returns results; never writes domain state directly.
-3. **`services/ingestion`** — TypeScript workers. Exchange connectors (Binance, Deribit, Bybit; REST backfill + WebSocket live), normalization to canonical symbols, structural DQ validation, persistence, gap detection/repair.
+3. **`services/ingestion`** — TypeScript workers. Exchange connectors in priority order (Deribit primary, Binance secondary, Bybit tertiary; REST backfill + WebSocket live) for candles, funding rate, open interest + OI delta, long/short ratio, strike-level option chains, liquidity; plus a deterministic Demo connector implementing the same interface. Normalization to canonical symbols, structural DQ validation, persistence, gap detection/repair.
 4. **`services/workers`** — TypeScript (BullMQ on Redis). Signal pipeline orchestrator, AI research orchestrator, calibration scheduler, defense-framework monitors (volatility shock, ETH options risk, black swan), alerting, cron jobs.
 5. **Infrastructure** — PostgreSQL 16 (TimescaleDB extension for candle hypertables), Redis 7 (cache + BullMQ queues + pub/sub for realtime), Docker Compose.
 
@@ -90,8 +95,13 @@ report for its (exchange, symbol, timeframe) scope; score < 90 → pipeline abor
 All features consumed by the Regime Engine, Signal Engine, AI agents, and backtests
 are computed once, versioned, and persisted — never recomputed ad hoc per consumer.
 
-- `FeatureSetDefinition` (name + version + declarative spec) defines *what* is
-  computed; changing the spec creates a new version, never mutates an old one.
+- The store is organized into five **domains** (`FeatureDomain`): **Technical**
+  (price/volume indicators), **Options** (IV, skew, term structure, PCR, gamma),
+  **Flow** (funding, OI delta, long/short ratio), **Regime** (M8 classifier inputs),
+  **Risk** (vol, drawdown, liquidity for M4). Each `FeatureSetDefinition` belongs to
+  exactly one domain.
+- `FeatureSetDefinition` (name + version + domain + declarative spec) defines *what*
+  is computed; changing the spec creates a new version, never mutates an old one.
 - `FeatureSnapshot` stores the computed vector per (symbol, timeframe, ts,
   featureSetVersion) with a `featureHash` (sha256 of the canonicalized vector) and a
   mandatory link to the `DataQualityReport` that admitted its inputs.
@@ -117,6 +127,10 @@ Regime taxonomy (canonical enum, used platform-wide):
   M9 allocation (regime-conditional correlation), dashboards.
 - PANIC and EUPHORIA are *risk regimes*: no strategy may declare them valid unless
   explicitly approved through governance with documented rationale.
+- **Regime Transition Matrix:** empirical transition probabilities P(regime→regime)
+  over rolling windows are persisted (`RegimeTransitionMatrix`, with sample counts
+  for auditability) — the substrate for future Monte Carlo path simulation and
+  regime-conditional stress testing (M3 Phase 4+).
 
 ### M1 — Signal Execution Engine
 
@@ -281,3 +295,6 @@ automatic; **de-escalation from RISK_OFF/FROZEN requires human approval** (fail-
 | Realtime UI | SSE (not WebSocket) | One-directional fan-out; simpler infra, works through proxies |
 | Auth | Single-operator auth (NextAuth credentials) initially | Platform is single-analyst first; RBAC schema-ready (User.role) |
 | Numeric precision | `Decimal` in Postgres/Prisma, `decimal.js` in TS, `float64` only inside Python vector math | No float drift in prices/PnL at rest |
+| Options storage | First-class `OptionContractSnapshot` rows (strike-level, full greeks) — not JSON blobs | Queryable chains (skew, smile, GEX by strike); chain summary + contracts share `(exchange, underlying, ts)` — no FK because Timescale hypertables cannot be FK targets |
+| Exchange priority | DERIBIT > BINANCE > BYBIT (`EXCHANGE_PRIORITY` in `packages/core`) | Deribit is the options/crypto-derivatives reference venue; cross-exchange DQ checks treat earlier entries as more authoritative |
+| Demo Mode | `DemoConnector` implements the same connector interface with a seeded PRNG | Portfolio-grade reproducibility: full pipeline (incl. DQ gateway) runs offline with zero credentials; demo data is namespaced, never mixable with live data |

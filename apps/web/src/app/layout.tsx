@@ -17,7 +17,11 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en" className="dark">
-      <body className="min-h-screen antialiased">{children}</body>
+      {/* suppressHydrationWarning: browser extensions (password managers, Grammarly,
+          dark-mode injectors) mutate <body> attributes before React hydrates. The
+          suppression is one level deep (attributes of <body> only) and nothing
+          in-repo renders time/locale/random-dependent markup during SSR. */}
+      <body className="min-h-screen antialiased" suppressHydrationWarning>{children}</body>
     </html>
   );
 }

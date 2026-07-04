@@ -9,11 +9,13 @@
 ## 1. Schema Map
 
 ```
-Market Data        : MarketCandle, FundingRate, OpenInterestSnapshot,
-                     OptionsChainSnapshot, LiquiditySnapshot
+Market Data        : MarketCandle, FundingRate, OpenInterestSnapshot (incl. OI delta),
+                     LongShortRatio, OptionsChainSnapshot (chain aggregates),
+                     OptionContractSnapshot (first-class strike-level rows),
+                     LiquiditySnapshot
 Data Quality (M5)  : DataQualityReport
-Feature Store (FS) : FeatureSetDefinition, FeatureSnapshot
-Regime (M8)        : RegimeSnapshot
+Feature Store (FS) : FeatureSetDefinition (5 domains), FeatureSnapshot
+Regime (M8)        : RegimeSnapshot, RegimeTransitionMatrix
 Signals (M1)       : Signal, SignalGateResult, SignalOutcome
 AI Agents (M2)     : AIAnalysis, PromptTemplate
 Backtesting (M3)   : Backtest, WalkForwardRun, MonteCarloRun, StressTestRun,
@@ -46,9 +48,13 @@ datasource db {
 
 // ───────────────────────── Enums ─────────────────────────
 
-enum Exchange  { BINANCE DERIBIT BYBIT }
+enum Exchange  { BINANCE DERIBIT BYBIT DEMO }   // DEMO = synthetic connector (Demo Mode)
 enum AssetType { SPOT PERP OPTION }
 enum Timeframe { M1 M5 M15 H1 H4 D1 }
+
+enum OptionType    { CALL PUT }
+enum LsRatioScope  { GLOBAL_ACCOUNTS TOP_TRADER_ACCOUNTS TOP_TRADER_POSITIONS }
+enum FeatureDomain { TECHNICAL OPTIONS FLOW REGIME RISK }
 
 enum SignalState     { STRONG_BUY BUY NEUTRAL SELL STRONG_SELL }
 enum SignalStatus    { ACTIVE TARGET_HIT STOPPED INVALIDATED EXPIRED REQUIRES_MANUAL_REVIEW CAPACITY_DEFERRED }
@@ -111,11 +117,25 @@ model OpenInterestSnapshot {
   ts        DateTime
   openInterest      Decimal @db.Decimal(28, 8)
   openInterestValue Decimal @db.Decimal(28, 2)   // USD notional
+  oiDelta           Decimal? @db.Decimal(28, 8)  // vs previous snapshot — computed at ingestion
+  oiDeltaPct        Decimal? @db.Decimal(12, 6)  // single source of truth for Flow features
 
   @@id([exchange, symbol, ts])
 }
 
-model OptionsChainSnapshot {   // Deribit-centric; one row per snapshot per underlying
+model LongShortRatio {                // Binance + Bybit (Deribit publishes none)
+  exchange  Exchange
+  symbol    String
+  scope     LsRatioScope
+  ts        DateTime
+  ratio     Decimal  @db.Decimal(12, 6)    // long / short
+  longPct   Decimal? @db.Decimal(8, 6)
+  shortPct  Decimal? @db.Decimal(8, 6)
+
+  @@id([exchange, symbol, scope, ts])
+}
+
+model OptionsChainSnapshot {   // chain-level aggregates; Deribit-primary
   exchange    Exchange
   underlying  String                 // BTC | ETH
   ts          DateTime
@@ -125,9 +145,31 @@ model OptionsChainSnapshot {   // Deribit-centric; one row per snapshot per unde
   putCallRatio Decimal? @db.Decimal(10, 4)
   totalGammaExposure Decimal? @db.Decimal(28, 2)
   termStructure Json?                // [{expiry, atmIv}]
-  chain        Json?                 // compressed strike-level detail
+  contractCount Int?
 
   @@id([exchange, underlying, ts])
+}
+
+model OptionContractSnapshot {        // FIRST-CLASS chain entity: one row per
+  exchange     Exchange               // contract per snapshot. No FK to
+  underlying   String                 // OptionsChainSnapshot (hypertables can't
+  ts           DateTime               // be FK targets) — join on (exchange,
+  expiry       DateTime               // underlying, ts).
+  strike       Decimal    @db.Decimal(20, 8)
+  optionType   OptionType
+  iv           Decimal?   @db.Decimal(10, 6)
+  delta        Decimal?   @db.Decimal(10, 6)
+  gamma        Decimal?   @db.Decimal(16, 10)
+  theta        Decimal?   @db.Decimal(16, 6)
+  vega         Decimal?   @db.Decimal(16, 6)
+  openInterest Decimal?   @db.Decimal(28, 8)
+  volume       Decimal?   @db.Decimal(28, 8)
+  bid          Decimal?   @db.Decimal(20, 8)
+  ask          Decimal?   @db.Decimal(20, 8)
+  markPrice    Decimal?   @db.Decimal(20, 8)
+
+  @@id([exchange, underlying, ts, expiry, strike, optionType])
+  @@index([underlying, expiry, ts(sort: Desc)])
 }
 
 model LiquiditySnapshot {       // depth/spread for liquidity scoring
@@ -166,8 +208,9 @@ model DataQualityReport {
 
 model FeatureSetDefinition {
   id        String   @id @default(cuid())
-  name      String                   // e.g. core-technical
+  name      String                   // core-technical | core-options | core-flow | core-regime | core-risk
   version   Int
+  domain    FeatureDomain            // TECHNICAL | OPTIONS | FLOW | REGIME | RISK
   spec      Json                     // declarative: indicators, params, windows
   createdAt DateTime @default(now())
   createdBy String
@@ -213,6 +256,21 @@ model RegimeSnapshot {
 
   @@unique([symbol, timeframe, ts])
   @@index([symbol, timeframe, ts(sort: Desc)])
+}
+
+model RegimeTransitionMatrix {       // persisted substrate for future Monte
+  id           String   @id @default(cuid())   // Carlo + regime-conditional
+  createdAt    DateTime @default(now())        // stress testing
+  symbol       String
+  timeframe    Timeframe
+  windowStart  DateTime
+  windowEnd    DateTime
+  method       String                // empirical_frequency | laplace_smoothed
+  regimes      Json                  // ordered MarketRegime[] (row/col order)
+  matrix       Json                  // row-major P(from -> to); rows sum to 1
+  sampleCounts Json                  // observed transition counts (audit)
+
+  @@index([symbol, timeframe, createdAt(sort: Desc)])
 }
 
 // ─────────────────── M1: Signals ───────────────────
@@ -670,7 +728,15 @@ model JobRun {                       // observability for cron/queue jobs
   `StrategyVersion → Backtest` (expected) via `CalibrationReport`; breaches create
   `ApprovalRequest`s — never direct mutations.
 - **TimescaleDB:** `MarketCandle`, `FundingRate`, `OpenInterestSnapshot`,
+  `LongShortRatio`, `OptionsChainSnapshot`, `OptionContractSnapshot`,
   `LiquiditySnapshot` become hypertables in a raw SQL migration; continuous
   aggregates derive H4/D1 from H1 to avoid redundant ingestion.
+- **Options are first-class:** strike-level chain rows (`OptionContractSnapshot`)
+  carry expiry, strike, IV, all greeks, OI, volume, bid/ask as typed Decimal
+  columns — smile/skew/GEX-by-strike are plain SQL queries, not JSON parsing.
+  `OptionContractSnapshot` is the largest table by far → compressed after 7 days.
+- **OI delta at ingestion:** `oiDelta`/`oiDeltaPct` are computed once when the
+  snapshot is written (vs the previous row for that exchange+symbol) — Flow
+  features consume them; no derived table to drift out of sync.
 - **Retention:** raw M1 candles 90 days, M5+ indefinitely; snapshots compressed by
   Timescale compression policies (migration-defined).

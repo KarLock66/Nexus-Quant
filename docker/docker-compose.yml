@@ -26,7 +26,7 @@ services:
     image: redis:7-alpine
     command: ["redis-server", "--appendonly", "yes"]
     ports:
-      - "6379:6379"
+      - "6380:6379"
     volumes:
       - redisdata:/data
     healthcheck:
@@ -55,6 +55,9 @@ services:
       DATABASE_URL: postgresql://nexus:nexus_dev_password@postgres:5432/nexus_quant
       REDIS_URL: redis://redis:6379
       QUANT_SERVICE_URL: http://quant:8000
+      # Local demo stack: explicit opt-in to the synthetic DEMO lineage (marks,
+      # demo bootstrap). Production deployments must NOT set this.
+      DEMO_MODE: "true"
     ports:
       - "3000:3000"
     depends_on:
@@ -74,6 +77,9 @@ services:
     environment:
       DATABASE_URL: postgresql://nexus:nexus_dev_password@postgres:5432/nexus_quant
       REDIS_URL: redis://redis:6379
+      # The DEMO venue (the default when INGEST_EXCHANGE is unset) is fail-closed
+      # behind this explicit opt-in — the daemon refuses to start without it.
+      DEMO_MODE: "true"
     depends_on:
       postgres:
         condition: service_healthy
@@ -90,6 +96,8 @@ services:
       DATABASE_URL: postgresql://nexus:nexus_dev_password@postgres:5432/nexus_quant
       REDIS_URL: redis://redis:6379
       QUANT_SERVICE_URL: http://quant:8000
+      # Demo bootstrap chain is opt-in (default-off in production workers).
+      DEMO_MODE: "true"
     depends_on:
       postgres:
         condition: service_healthy

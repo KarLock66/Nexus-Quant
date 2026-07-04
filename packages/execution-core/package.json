@@ -1,0 +1,28 @@
+{
+  "name": "@nexus/execution-core",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Phase 11A-1 Execution Core Foundation — pure, deterministic, fail-closed derivation of execution intent/plan/state (intent, plan, orders, fills, positions, lifecycle, immutable audit) from already-served TradingDecision + TradePlan outputs (the single source of truth). ZERO broker dependency; IO-free, clock-injected, replay-safe. Recomputes NOTHING the decision/plan already carry (direction, confidence, entry, stop, targets, R:R, readiness are consumed VERBATIM). The only component allowed to create, track and close orders.",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "dev": "tsc -p tsconfig.json --watch"
+  },
+  "dependencies": {
+    "@nexus/core": "workspace:*",
+    "@nexus/trading-decision": "workspace:*",
+    "@nexus/trading-plan": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.4"
+  }
+}

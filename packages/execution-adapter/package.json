@@ -1,0 +1,29 @@
+{
+  "name": "@nexus/execution-adapter",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Phase 11A-2 Execution Adapter Foundation — pure, deterministic, fail-closed translation layer between runtime services and the sealed @nexus/execution-core. Ships a PaperExecutionAdapter (deterministic, injected-fill-only, no market simulation, no auto-profit) and a NullExecutionAdapter (always fail-closed). ZERO broker/exchange/IO; clock-injected, randomness-forbidden, replay-safe. Contains NO trading logic — entries, R:R, targets, confidence, readiness and sizing are ALL owned by the sealed core and consumed VERBATIM.",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "dev": "tsc -p tsconfig.json --watch"
+  },
+  "dependencies": {
+    "@nexus/core": "workspace:*",
+    "@nexus/trading-decision": "workspace:*",
+    "@nexus/trading-plan": "workspace:*",
+    "@nexus/execution-core": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.4"
+  }
+}

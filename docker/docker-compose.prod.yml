@@ -1,0 +1,182 @@
+# Nexus Quant — PRODUCTION runtime topology (Final production completion).
+#
+# Zero-demo discipline: NO service sets DEMO_MODE; the workers/ingestion refuse
+# synthetic paths without it, and `pnpm start:prod` fails validation if it leaks
+# in from a stray .env. All gates armed: RISK_ENGINE=on, CONTROL_PLANE=on,
+# durable journals on a named volume, persistent portfolio ledger on.
+#
+# Usage (from repo root):
+#   docker compose -f docker/docker-compose.prod.yml up -d --build
+#
+# Required environment (fail-closed — compose refuses to start without them):
+#   POSTGRES_PASSWORD   production DB password
+#   OPS_CONTROL_TOKEN   operator bearer token for mutating control/governance APIs
+# Live order routing additionally requires (see .env.example):
+#   MARKET_BROKER=real DERIBIT_CLIENT_ID=... DERIBIT_CLIENT_SECRET=... DERIBIT_ENV=live|test
+# Without them the default is paper execution against REAL Deribit market data.
+
+name: nexus-quant-prod
+
+services:
+  postgres:
+    image: timescale/timescaledb:latest-pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: nexus
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required in production}
+      POSTGRES_DB: nexus_quant
+    # Bound to loopback ONLY (operator tooling / psql); never exposed off-host.
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata_prod:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nexus -d nexus_quant"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    # Internal network only — nothing outside the compose network reaches Redis.
+    volumes:
+      - redisdata_prod:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  quant:
+    build:
+      context: ..
+      dockerfile: docker/quant.Dockerfile
+    restart: unless-stopped
+    environment:
+      QUANT_SERVICE_SHARED_SECRET: ${QUANT_SERVICE_SHARED_SECRET:-}
+    # Internal network only (workers/ingestion reach it as http://quant:8000).
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # One-shot schema migration + Timescale registration. Runs to completion
+  # BEFORE any daemon starts (fail-closed: a failed migration blocks the stack).
+  migrate:
+    build:
+      context: ..
+      dockerfile: docker/node-service.Dockerfile
+      args:
+        SERVICE: workers
+    restart: "no"
+    working_dir: /repo/packages/db
+    command:
+      - sh
+      - -c
+      - "npx prisma migrate deploy && npx prisma db execute --file prisma/timescale.sql --schema prisma/schema.prisma"
+    environment:
+      DATABASE_URL: postgresql://nexus:${POSTGRES_PASSWORD:?}@postgres:5432/nexus_quant
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  ingestion:
+    build:
+      context: ..
+      dockerfile: docker/node-service.Dockerfile
+      args:
+        SERVICE: ingestion
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://nexus:${POSTGRES_PASSWORD:?}@postgres:5432/nexus_quant
+      REDIS_URL: redis://redis:6379
+      QUANT_SERVICE_URL: http://quant:8000
+      QUANT_SERVICE_SHARED_SECRET: ${QUANT_SERVICE_SHARED_SECRET:-}
+      # REAL venue market data (public endpoints; DEMO is refused without DEMO_MODE).
+      INGEST_EXCHANGE: ${INGEST_EXCHANGE:-DERIBIT}
+      INGEST_SYMBOLS: ${INGEST_SYMBOLS:-BTC-PERP,ETH-PERP}
+      INGEST_TIMEFRAMES: ${INGEST_TIMEFRAMES:-H1,H4,D1}
+      INGEST_LIVE_TIMEFRAME: ${INGEST_LIVE_TIMEFRAME:-H1}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      quant:
+        condition: service_healthy
+
+  workers:
+    build:
+      context: ..
+      dockerfile: docker/node-service.Dockerfile
+      args:
+        SERVICE: workers
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://nexus:${POSTGRES_PASSWORD:?}@postgres:5432/nexus_quant
+      REDIS_URL: redis://redis:6379
+      QUANT_SERVICE_URL: http://quant:8000
+      QUANT_SERVICE_SHARED_SECRET: ${QUANT_SERVICE_SHARED_SECRET:-}
+      # Execution: real Deribit marks; broker defaults to paper — flipping to
+      # `real` requires the Deribit credentials below (fail-closed otherwise:
+      # execution stays unarmed, signals still flow).
+      MARKET_BROKER: ${MARKET_BROKER:-paper}
+      MARKET_DATA_SOURCE: realtime
+      DERIBIT_CLIENT_ID: ${DERIBIT_CLIENT_ID:-}
+      DERIBIT_CLIENT_SECRET: ${DERIBIT_CLIENT_SECRET:-}
+      DERIBIT_ENV: ${DERIBIT_ENV:-test}
+      DERIBIT_INSTRUMENT_MAP: ${DERIBIT_INSTRUMENT_MAP:-}
+      # Durability: restart reconstruction journals on a persistent volume.
+      MARKET_JOURNAL_PATH: /data/journals/market-journal.ndjson
+      RISK_JOURNAL_PATH: /data/journals/risk-journal.ndjson
+      # Pre-trade gates ARMED (Phase 8 risk engine + Phase 9.7 control plane).
+      RISK_ENGINE: "on"
+      CONTROL_PLANE: "on"
+      # Persistent portfolio & equity ledger (PortfolioSnapshot series).
+      PORTFOLIO_LEDGER: "on"
+      PORTFOLIO_NAME: ${PORTFOLIO_NAME:-production}
+      PORTFOLIO_BASE_CURRENCY: ${PORTFOLIO_BASE_CURRENCY:-USDT}
+      SIGNAL_TICK_MS: ${SIGNAL_TICK_MS:-15000}
+    volumes:
+      - journals:/data/journals
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      quant:
+        condition: service_healthy
+
+  web:
+    build:
+      context: ..
+      dockerfile: docker/web.Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://nexus:${POSTGRES_PASSWORD:?}@postgres:5432/nexus_quant
+      REDIS_URL: redis://redis:6379
+      QUANT_SERVICE_URL: http://quant:8000
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:?NEXTAUTH_SECRET is required in production}
+      # Operator bearer token for the MUTATING control/governance endpoints
+      # (kill switch, resume, strategy registration/approval). FAIL-CLOSED:
+      # without it those commands are refused — so it is REQUIRED here.
+      OPS_CONTROL_TOKEN: ${OPS_CONTROL_TOKEN:?OPS_CONTROL_TOKEN is required in production}
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+volumes:
+  pgdata_prod:
+  redisdata_prod:
+  journals:

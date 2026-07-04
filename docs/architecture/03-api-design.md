@@ -74,6 +74,11 @@ Two API surfaces:
 | GET | `/api/v1/data-quality/reports/:id` | Full check breakdown + diagnostics |
 | POST | `/api/v1/data-quality/validate` | 202 — on-demand validation of a scope/window |
 
+### Market Data (Phase 1)
+| GET | `/api/v1/market/candles` | `?exchange&symbol&timeframe&from&to` — OHLCV series |
+| GET | `/api/v1/market/options/chain` | `?underlying&exchange=DERIBIT&ts?` — latest (or as-of) chain: aggregates + strike-level contracts (expiry, strike, IV, greeks, OI, volume, bid/ask) |
+| GET | `/api/v1/market/flow` | `?symbol&from&to` — funding rate, OI + OI delta, long/short ratio time series |
+
 ### Portfolio & Analytics (M6)
 | GET | `/api/v1/portfolio` / `/:id/snapshots` | Overview + time series |
 | GET | `/api/v1/analytics/equity-curve` | `?portfolioId&from&to&resolution` |
@@ -120,7 +125,7 @@ All request/response bodies validate against JSON Schemas in
 | Method | Path | Purpose |
 | --- | --- | --- |
 | POST | `/indicators/compute` | `{candles_ref | window, indicators[]}` → raw indicator values |
-| POST | `/features/compute` | `{scope, feature_set, version}` → persisted FeatureSnapshot ref + featureHash (refuses scopes without DQ ≥ 90) |
+| POST | `/features/compute` | `{scope, feature_set, version, market_data}` → computed feature vector + canonical `featureHash`. **Quant is stateless:** the TS caller (workers) verifies DQ ≥ 90 *before* calling and persists the `FeatureSnapshot` *after* — Python computes, TypeScript owns admission + persistence |
 | POST | `/regime/classify` | `{feature_snapshot_id}` → `{regime (7-state), probabilities, evidence}` |
 | POST | `/dq/statistical` | Stage-B checks → `{checks[], deductions}` |
 | POST | `/sizing/calculate` | `{method, portfolio_value, risk_per_trade, stop_distance, volatility}` → `{position_size, max_exposure, portfolio_risk_pct}` (numbers only — limit approval happens in TS gate layer) |

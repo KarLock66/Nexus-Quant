@@ -9,13 +9,18 @@ RUN npm install -g pnpm@11
 WORKDIR /repo
 
 COPY pnpm-workspace.yaml package.json turbo.json ./
+COPY tsconfig*.json ./
 COPY packages ./packages
 COPY services/ingestion ./services/ingestion
 COPY services/workers ./services/workers
 COPY apps/web/package.json ./apps/web/
 
 RUN pnpm install --no-frozen-lockfile
-RUN pnpm --filter @nexus/core build && pnpm --filter @nexus/events build
+
+RUN pnpm --filter @nexus/db build
+RUN pnpm --filter @nexus/core build
+RUN pnpm --filter @nexus/events build
+
 RUN pnpm --filter "@nexus/${SERVICE}" build
 
 FROM node:24-alpine AS runner

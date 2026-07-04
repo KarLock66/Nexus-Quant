@@ -1,0 +1,26 @@
+{
+  "name": "@nexus/trading-decision",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Phase 10A-1 Production Trading Decision Engine — pure, deterministic, fail-closed derivation of actionable TradingDecisions (entry/stop/targets, R:R, scores, regime, explainability, multi-timeframe consensus, opportunity ranking) from an admitted EngineSignal + its FeatureSnapshot. IO-free; the decision/side/confidence are carried VERBATIM from the signal engine (single source of truth). Consumed by the web tier.",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "dev": "tsc -p tsconfig.json --watch"
+  },
+  "dependencies": {
+    "@nexus/core": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.4"
+  }
+}

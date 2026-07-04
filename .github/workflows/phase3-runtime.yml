@@ -1,0 +1,102 @@
+name: phase3-runtime
+
+# Phase 3 runtime gates (CI runtime strategy).
+#
+# Three independent jobs so a DB-dependent failure does not mask the test gates:
+#   node-tests   : build / typecheck / vitest ingestion / vitest workers
+#                  (these double the DB/HTTP boundaries; no live DB needed)
+#   db-runtime   : real Postgres/TimescaleDB -> prisma migrate deploy + seed
+#   quant-runtime: pytest
+#
+# SCOPE NOTE (no overclaim): this workflow does NOT execute a live
+# Market Data -> DQ -> Feature -> Signal -> Replay process pipeline. The Signal
+# and Replay stages have no runnable worker orchestrator in this repo
+# (services/workers/src/index.ts is a Phase-0 skeleton); they are covered here
+# only by their vitest suites (real decision/replay/lineage/hash logic;
+# external DB/HTTP boundaries doubled).
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches:
+      - remediation/step8-featurehash-reproducibility
+
+permissions:
+  contents: read
+
+jobs:
+  node-tests:
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: postgresql://nexus:nexus_dev_password@localhost:5432/nexus_quant
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm db:generate
+      - run: pnpm -r build
+      - run: pnpm -r typecheck
+      - name: vitest ingestion
+        run: pnpm --filter @nexus/ingestion test
+      - name: vitest workers (replay + determinism)
+        run: pnpm --filter @nexus/workers test
+
+  db-runtime:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: timescale/timescaledb:latest-pg16
+        env:
+          POSTGRES_USER: nexus
+          POSTGRES_PASSWORD: nexus_dev_password
+          POSTGRES_DB: nexus_quant
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U nexus -d nexus_quant"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://nexus:nexus_dev_password@localhost:5432/nexus_quant
+      REDIS_URL: redis://localhost:6379
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm db:generate
+      - name: Apply committed migrations to the real database
+        run: pnpm --filter @nexus/db migrate:deploy
+      - name: Seed
+        run: pnpm db:seed
+
+  quant-runtime:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/quant
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev]"
+      - run: pytest

@@ -1,0 +1,23 @@
+{
+  "name": "@nexus/control",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Phase 9.7 Production Control Plane — pure, deterministic runtime state machine, trading-permission engine, protection rules, recovery gates, runbooks (IO-free; shared by web + workers)",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "dev": "tsc -p tsconfig.json --watch"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.4"
+  }
+}

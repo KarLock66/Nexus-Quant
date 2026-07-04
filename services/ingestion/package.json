@@ -8,15 +8,24 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "demo:ingest": "tsx src/cli/demo-ingest.ts",
+    "live:ingest": "tsx src/cli/live-ingest.ts",
+    "ci:seal-phase9": "tsx src/ci/seal-phase9-runtime.ts"
   },
   "dependencies": {
     "@nexus/core": "workspace:*",
-    "@nexus/events": "workspace:*"
+    "@nexus/db": "workspace:*",
+    "@nexus/events": "workspace:*",
+    "ioredis": "^5.6.1",
+    "ws": "^8.18.2"
   },
   "devDependencies": {
     "@types/node": "^22.15.0",
+    "@types/ws": "^8.18.1",
     "tsx": "^4.19.4",
-    "typescript": "^5.8.3"
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.4"
   }
 }

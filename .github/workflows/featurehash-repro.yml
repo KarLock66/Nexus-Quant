@@ -1,0 +1,155 @@
+name: featurehash-reproducibility
+
+# ADR-0001 closure enforcement. Branch protection on `main` MUST require the
+# `phase1-gate` check (and the scheduled `featurehash-stability` /
+# `base-image-drift` workflows must be GREEN) before merge — that conjunction is
+# the Phase 1 final verdict.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  # 1 — Docker digest enforcement + required-artifact presence (fail-closed).
+  guards:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: FROM must be pinned by an exact sha256 64-hex digest (no tag, no overflow)
+        run: |
+          set -euo pipefail
+          DF=docker/quant.Dockerfile
+          # (a) every FROM line must carry an @sha256: digest (no tag-based images)
+          if grep -nE '^[[:space:]]*FROM[[:space:]]' "$DF" | grep -vq '@sha256:'; then
+            echo "HARD FAIL: tag-based or unpinned FROM in $DF"; exit 1
+          fi
+          # (b) the pinned digest must be EXACTLY 64 hex (rejects placeholder + overflow).
+          #     Capture the full hex run with {64,}; a 65+ hex run then fails the exact -x check.
+          PIN=$(grep -oE 'sha256:[0-9a-f]{64,}' "$DF" | head -1 || true)
+          if ! printf '%s' "$PIN" | grep -qxE 'sha256:[0-9a-f]{64}'; then
+            echo "HARD FAIL: digest not exactly 64 hex (got '${PIN:-<none>}'); run bootstrap"; exit 1
+          fi
+          echo "digest pin OK: $PIN"
+      - name: Required reproducibility artifacts must exist
+        run: |
+          set -euo pipefail
+          test -f services/quant/requirements.lock                       || { echo "HARD FAIL: requirements.lock missing (run bootstrap)"; exit 1; }
+          test -f services/quant/goldens/inputs/core-technical-v1.json    || { echo "HARD FAIL: golden input missing"; exit 1; }
+          test -f services/quant/goldens/core-technical-v1.golden.json    || { echo "HARD FAIL: golden baseline missing (run bootstrap)"; exit 1; }
+          echo "artifacts present"
+
+  # 4 — Base image drift detector wired into CI (also runs scheduled).
+  base-drift:
+    needs: guards
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - run: bash services/quant/tools/verify_base_digest.sh
+
+  # 5 — Lockfile immutability: installed==lock in-container, and pyproject
+  #     re-resolves to the identical committed lock (no dependency drift).
+  lockfile:
+    needs: guards
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build deterministic image
+        run: docker buildx build --load -f docker/quant.Dockerfile -t quant:repro .
+      - name: Installed env must equal the lock (in-container)
+        run: docker run --rm --network none quant:repro python tools/verify_locked_env.py requirements.lock
+      - name: Re-resolve lock from pinned base and assert no drift
+        run: |
+          set -euo pipefail
+          DIGEST=$(grep -oE 'sha256:[0-9a-f]{64,}' docker/quant.Dockerfile | head -1)
+          printf '%s' "$DIGEST" | grep -qxE 'sha256:[0-9a-f]{64}' || {
+            echo "HARD FAIL: malformed base digest '$DIGEST'"; exit 1; }
+          docker run --rm -v "${{ github.workspace }}/services/quant":/w -w /w \
+            "python:3.12-slim@${DIGEST}" sh -c \
+            'pip install --no-cache-dir "pip==24.3.1" "pip-tools==7.4.1" >/dev/null && \
+             pip-compile --quiet --generate-hashes --allow-unsafe --strip-extras -o requirements.regen.lock pyproject.toml'
+          if ! diff -u services/quant/requirements.lock services/quant/requirements.regen.lock; then
+            echo "HARD FAIL: lockfile drift — pyproject resolves differently than the committed lock"
+            rm -f services/quant/requirements.regen.lock; exit 1
+          fi
+          rm -f services/quant/requirements.regen.lock
+          echo "lockfile immutable"
+
+  # 2 + 3 — Golden hash, computed ONLY inside the container, across the
+  #         cross-environment matrix. Each cell hard-fails on baseline mismatch.
+  golden-matrix:
+    needs: guards
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      # Explicit include list -> deterministic, collision-free artifact names via
+      # the `arch` label (GitHub Actions expressions have no string-replace fn).
+      matrix:
+        include:
+          - { runner: ubuntu-22.04, platform: linux/amd64, arch: amd64 }
+          - { runner: ubuntu-22.04, platform: linux/arm64, arch: arm64 }   # via QEMU
+          - { runner: ubuntu-24.04, platform: linux/amd64, arch: amd64 }
+          - { runner: ubuntu-24.04, platform: linux/arm64, arch: arm64 }   # via QEMU
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: Build digest-pinned image (${{ matrix.platform }})
+        run: docker buildx build --platform ${{ matrix.platform }} --load -f docker/quant.Dockerfile -t quant:repro .
+      - name: Golden check INSIDE container only (no host execution, no network)
+        run: docker run --rm --network none quant:repro python tools/golden.py check --strict
+      - name: Emit hash artifact
+        run: docker run --rm --network none quant:repro python tools/golden.py emit > "hash-${{ matrix.runner }}-${{ matrix.arch }}.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hash-${{ matrix.runner }}-${{ matrix.arch }}
+          path: hash-${{ matrix.runner }}-${{ matrix.arch }}.txt
+
+  # 3 — Reconcile: every matrix cell must have produced ONE identical hash.
+  reconcile:
+    needs: golden-matrix
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: hash-*
+          merge-multiple: true
+          path: hashes
+      - name: All environments must produce one identical featureHash
+        run: |
+          set -euo pipefail
+          echo "--- per-environment hashes ---"; cat hashes/hash-*.txt
+          U=$(sort -u hashes/hash-*.txt | wc -l)
+          if [ "$U" -ne 1 ]; then echo "HARD FAIL: cross-environment hash divergence"; exit 1; fi
+          echo "cross-environment reproducibility OK"
+
+  # 6 — Per-merge 100x stability proof (self-contained so the gate can require it).
+  stability:
+    needs: guards
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - run: docker buildx build --load -f docker/quant.Dockerfile -t quant:repro .
+      - name: 100x in-container determinism (single unique hash required)
+        run: |
+          set -euo pipefail
+          docker run --rm --network none quant:repro sh -c \
+            'for i in $(seq 1 100); do python tools/golden.py emit; done' | sort -u > u.txt
+          cat u.txt
+          [ "$(wc -l < u.txt)" -eq 1 ] || { echo "HARD FAIL: non-deterministic over 100 runs"; exit 1; }
+          echo "100x stability OK"
+
+  # 7 — Phase 1 final verdict. GREEN only if ALL enforcement jobs passed.
+  #     Make THIS the required status check in branch protection.
+  phase1-gate:
+    needs: [guards, base-drift, lockfile, golden-matrix, reconcile, stability]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Phase 1 closure verdict
+        run: echo "PHASE 1 CLOSED — digest, lockfile, golden matrix, base-drift, and 100x stability all GREEN"
