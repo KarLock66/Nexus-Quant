@@ -19,14 +19,13 @@
  * against a silently stale price (rather than trading on it indefinitely).
  *
  * OPT-IN / default-off: the worker constructs this only under
- * MARKET_DATA_SOURCE=realtime; the demo provider stays the default, so Phase
- * 6/7/8 behavior is byte-for-byte unchanged.
+ * MARKET_DATA_SOURCE=realtime; with no source configured execution stays
+ * unarmed (fail-closed) — there is no synthetic default.
  *
- * VENUE FILTER (zero-demo discipline): DEMO-venue rows are synthetic (seeded-PRNG
- * connector / fixtures) written into the SAME market tables as live venues. They
- * are EXCLUDED from the mark unless the deployment explicitly opts in via
- * `allowDemoVenue` (wired from the platform-wide DEMO_MODE flag) — a fresh
- * synthetic candle must never become the price real orders are sized against.
+ * VENUE FILTER (zero-synthetic discipline): legacy DEMO-venue rows are synthetic
+ * fixtures written into the SAME market tables as live venues by old builds.
+ * They are excluded from every mark query UNCONDITIONALLY — a synthetic candle
+ * must never become the price real orders are sized against.
  */
 
 import type { PrismaClient } from "@nexus/db";
@@ -51,11 +50,6 @@ export interface DbQuoteTransportOptions {
   pollMs?: number;
   /** Max mark age before a source is treated as stale/absent (default 60000). */
   maxAgeMs?: number;
-  /**
-   * Admit synthetic DEMO-venue rows as marks (default FALSE — production must
-   * never mark against demo data). Wire from DEMO_MODE only.
-   */
-  allowDemoVenue?: boolean;
 }
 
 export class DbQuoteTransport implements RealtimeQuoteTransport {
@@ -63,8 +57,12 @@ export class DbQuoteTransport implements RealtimeQuoteTransport {
   private readonly symbols: string[];
   private readonly pollMs: number;
   private readonly maxAgeMs: number;
-  /** Prisma where-clause fragment excluding the synthetic DEMO venue (unless opted in). */
-  private readonly venueFilter: { exchange?: { not: "DEMO" } };
+  /**
+   * Prisma where-clause fragment excluding the legacy synthetic DEMO venue —
+   * UNCONDITIONAL defense-in-depth: nothing writes DEMO rows anymore, but a
+   * pre-existing database must never surface one as a production mark.
+   */
+  private readonly venueFilter = { exchange: { not: "DEMO" } } as const;
   private timer: ReturnType<typeof setInterval> | undefined;
 
   constructor(
@@ -74,7 +72,6 @@ export class DbQuoteTransport implements RealtimeQuoteTransport {
     this.symbols = opts.symbols ?? DEFAULT_SYMBOLS;
     this.pollMs = opts.pollMs ?? DEFAULT_POLL_MS;
     this.maxAgeMs = opts.maxAgeMs ?? DEFAULT_MAX_AGE_MS;
-    this.venueFilter = opts.allowDemoVenue === true ? {} : { exchange: { not: "DEMO" } };
   }
 
   latest(symbol: string): Quote | null {

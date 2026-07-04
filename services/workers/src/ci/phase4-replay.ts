@@ -12,7 +12,8 @@
  * Fail-closed: any divergence between the two runs is a failure.
  */
 
-import { ensureSignalDemoChain, prisma } from "@nexus/db";
+import { prisma } from "@nexus/db";
+import { ensureCiFixtureLineage } from "./fixtures.js";
 import { runSignalPipelineTick } from "../pipeline/orchestrator.js";
 import {
   generateSignal,
@@ -28,8 +29,8 @@ import type {
 } from "../signal/index.js";
 import {
   assert,
-  demoRows,
-  DEMO_SNAPSHOT_IDS,
+  fixtureRows,
+  FIXTURE_SNAPSHOT_IDS,
   log,
   makeLog,
 } from "./lib.js";
@@ -38,17 +39,17 @@ export async function runPhase4(): Promise<void> {
   log("info", "PHASE 4 — replay determinism");
   const quiet = makeLog("warn");
 
-  const chain = await ensureSignalDemoChain(prisma);
+  const chain = await ensureCiFixtureLineage(prisma);
   const strategyVersion: SignalStrategyVersion = {
     id: chain.strategyVersion.id,
     parameters: chain.strategyVersion.parameters,
   };
 
   const snaps = await prisma.featureSnapshot.findMany({
-    where: { id: { in: [...DEMO_SNAPSHOT_IDS] } },
+    where: { id: { in: [...FIXTURE_SNAPSHOT_IDS] } },
     include: { dqReport: true },
   });
-  assert(snaps.length === 2, `expected 2 demo snapshots, found ${snaps.length}`);
+  assert(snaps.length === 2, `expected 2 fixture snapshots, found ${snaps.length}`);
 
   // ── Level 1: pure engine determinism ────────────────────────────────────────
   for (const snap of snaps) {
@@ -81,11 +82,11 @@ export async function runPhase4(): Promise<void> {
   }
 
   // ── Level 2: persistence determinism (same input batch twice) ───────────────
-  // demoBootstrap explicit — self-owning, env-independent (see phase1 note / F1).
-  await runSignalPipelineTick({ prisma, log: quiet, tickId: "phase4-a", demoBootstrap: true });
-  const first = await demoRows();
-  await runSignalPipelineTick({ prisma, log: quiet, tickId: "phase4-b", demoBootstrap: true });
-  const second = await demoRows();
+  // Fixture lineage seeded explicitly above — the tick resolves persisted rows only.
+  await runSignalPipelineTick({ prisma, log: quiet, tickId: "phase4-a" });
+  const first = await fixtureRows();
+  await runSignalPipelineTick({ prisma, log: quiet, tickId: "phase4-b" });
+  const second = await fixtureRows();
   assert(first.length === 2 && second.length === 2, "expected 2 rows on both runs");
 
   const firstBySnap = new Map(first.map((r) => [r.featureSnapshotId, r]));

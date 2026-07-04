@@ -23,6 +23,7 @@ import { emptyAccount } from "../market/account.js";
 import { applyFill, flatPosition } from "../market/position.js";
 import type { Account, ExecutionLineage, Fill, Position } from "../market/types.js";
 import { createMarketExecutionAdapter } from "../market/index.js";
+import { fixtureQuoteProvider } from "../ci/fixtures.js";
 import { createExecutionStage, runExecutionStage } from "../execution/index.js";
 import type {
   DecisionEvent,
@@ -480,7 +481,7 @@ describe("Integration — the execution stage routes every order through the ris
   it("BLOCKS execution when the risk engine rejects (no fill, no intent)", async () => {
     const store = new InMemoryRiskEventStore();
     const engine = new RiskEngine({ store, limits: limits({ maxPositionNotional: 1_000 }) }); // tiny -> all blocked
-    const adapter = createMarketExecutionAdapter();
+    const adapter = createMarketExecutionAdapter({ marketData: fixtureQuoteProvider() });
     const riskGate = createRiskExecutionGate({
       engine,
       getView: () => adapter.getMarketState(),
@@ -501,7 +502,7 @@ describe("Integration — the execution stage routes every order through the ris
   it("APPROVES and lets execution fill when within limits, journaling RISK_CHECK_PASSED", async () => {
     const store = new InMemoryRiskEventStore();
     const engine = new RiskEngine({ store, limits: DEFAULT_RISK_LIMITS });
-    const adapter = createMarketExecutionAdapter();
+    const adapter = createMarketExecutionAdapter({ marketData: fixtureQuoteProvider() });
     const riskGate = createRiskExecutionGate({
       engine,
       getView: () => adapter.getMarketState(),

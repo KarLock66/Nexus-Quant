@@ -57,7 +57,7 @@ describe("DbQuoteTransport freshness (fail-closed on disconnect)", () => {
     expect(t.latest("BTC-PERP")).toBeNull();
   });
 
-  it("EXCLUDES the synthetic DEMO venue from every mark query by default", async () => {
+  it("EXCLUDES the legacy synthetic DEMO venue from every mark query, unconditionally", async () => {
     const prisma = prismaWith(null);
     const t = new DbQuoteTransport(prisma, { symbols: ["BTC-PERP"] });
     await t.refresh();
@@ -67,14 +67,7 @@ describe("DbQuoteTransport freshness (fail-closed on disconnect)", () => {
       };
       expect(call.where).toEqual({ symbol: "BTC-PERP", exchange: { not: "DEMO" } });
     }
-  });
-
-  it("admits DEMO-venue rows only under the explicit allowDemoVenue opt-in", async () => {
-    const prisma = prismaWith(null);
-    const t = new DbQuoteTransport(prisma, { symbols: ["BTC-PERP"], allowDemoVenue: true });
-    await t.refresh();
-    const call = (prisma.orderbookSnapshot.findFirst as ReturnType<typeof vi.fn>).mock
-      .calls[0]![0] as { where: Record<string, unknown> };
-    expect(call.where).toEqual({ symbol: "BTC-PERP" });
+    // There is no opt-in to admit synthetic venues — the option no longer exists.
+    expect("allowDemoVenue" in t).toBe(false);
   });
 });

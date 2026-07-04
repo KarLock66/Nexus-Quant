@@ -16,8 +16,6 @@
     "db:generate": "pnpm --filter @nexus/db generate",
     "db:migrate": "pnpm --filter @nexus/db migrate:dev",
     "db:seed": "pnpm --filter @nexus/db seed",
-    "db:seed:demo": "pnpm --filter @nexus/db seed:demo",
-    "demo:ingest": "pnpm --filter @nexus/ingestion demo:ingest",
     "ci:infra": "docker compose -f docker/docker-compose.ci.yml up -d",
     "ci:infra:down": "docker compose -f docker/docker-compose.ci.yml down -v",
     "ci:harness": "pnpm --filter @nexus/workers ci:harness",

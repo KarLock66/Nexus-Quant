@@ -2,7 +2,7 @@
  * PHASE 6 — Market integration runtime verification.
  *
  * Drives the REAL signal pipeline tick with the broker-backed market adapter
- * (paper) opted in, over the deterministic demo lineage, and asserts the Phase 6
+ * (paper) opted in, over the deterministic fixture lineage, and asserts the Phase 6
  * guarantees end-to-end under runtime conditions:
  *
  *   1. reconciliation : broker state (positions folded from fills) reconciles with
@@ -12,22 +12,22 @@
  *                       transition, no overfill)
  *   3. reconstruction : market state (positions + account) rebuilt from the fill
  *                       stream alone EQUALS the live adapter state (event-sourced)
- *   4. determinism    : a fresh adapter over the same demo lineage reaches the
+ *   4. determinism    : a fresh adapter over the same fixture lineage reaches the
  *                       identical market state
  *
- * Phase 6 adds NO persistence, so this phase needs only the demo upstream chain
+ * Phase 6 adds NO persistence, so this phase needs only the fixture upstream chain
  * (idempotent) — no schema, no migration. Fail-closed: the first failing assertion
  * aborts the run.
  */
 
-import { ensureSignalDemoChain, prisma } from "@nexus/db";
+import { prisma } from "@nexus/db";
+import { ensureCiFixtureLineage, fixtureQuoteProvider } from "./fixtures.js";
 import { createExecutionStage } from "../execution/index.js";
 import { runSignalPipelineTick } from "../pipeline/orchestrator.js";
 import {
   InProcessMarketBus,
   PaperBroker,
   createMarketExecutionAdapter,
-  demoMarketDataProvider,
   reconstructMarketState,
   reduceOrder,
   type Fill,
@@ -57,7 +57,7 @@ function fillsFrom(events: OrderEvent[]): Fill[] {
 export async function runPhase6(): Promise<void> {
   log("info", "PHASE 6 — market integration (order lifecycle, position/account, reconciliation)");
   const quiet = makeLog("warn");
-  await ensureSignalDemoChain(prisma);
+  await ensureCiFixtureLineage(prisma);
 
   // Capture the order lifecycle off the market bus for runtime verification.
   const orderEvents: OrderEvent[] = [];
@@ -68,21 +68,21 @@ export async function runPhase6(): Promise<void> {
 
   const adapter = createMarketExecutionAdapter({
     broker: PaperBroker,
-    marketData: demoMarketDataProvider(),
+    marketData: fixtureQuoteProvider(),
     bus,
   });
   const deps = createExecutionStage({ adapter });
 
-  // ── 1) Reconciliation holds after each tick (idempotent demo lineage) ─────────
-  // demoBootstrap explicit — self-owning, env-independent (see phase1 note / F1).
-  await runSignalPipelineTick({ prisma, log: quiet, tickId: "phase6-a", execution: deps, demoBootstrap: true });
+  // ── 1) Reconciliation holds after each tick (idempotent fixture lineage) ─────────
+  // Fixture lineage seeded explicitly above — the tick resolves persisted rows only.
+  await runSignalPipelineTick({ prisma, log: quiet, tickId: "phase6-a", execution: deps });
   const reconA = adapter.reconcileWith(deps.portfolioState);
   assert(
     reconA.ok,
     `broker<->portfolio reconciliation failed after tick A: ${reconA.ok ? "" : reconA.detail}`,
   );
 
-  await runSignalPipelineTick({ prisma, log: quiet, tickId: "phase6-b", execution: deps, demoBootstrap: true });
+  await runSignalPipelineTick({ prisma, log: quiet, tickId: "phase6-b", execution: deps });
   const reconB = adapter.reconcileWith(deps.portfolioState);
   assert(
     reconB.ok,
@@ -92,7 +92,7 @@ export async function runPhase6(): Promise<void> {
   const positions = adapter.getMarketState().positions;
   assert(
     Object.keys(positions).length >= 1,
-    "expected at least one open position from the demo lineage",
+    "expected at least one open position from the fixture lineage",
   );
 
   // ── 2) Order lifecycle: each order stream reduces cleanly to a terminal state ──
@@ -131,10 +131,10 @@ export async function runPhase6(): Promise<void> {
   // ── 4) Determinism: a fresh adapter reaches the identical market state ─────────
   const fresh = createMarketExecutionAdapter({
     broker: PaperBroker,
-    marketData: demoMarketDataProvider(),
+    marketData: fixtureQuoteProvider(),
   });
   const freshDeps = createExecutionStage({ adapter: fresh });
-  await runSignalPipelineTick({ prisma, log: quiet, tickId: "phase6-c", execution: freshDeps, demoBootstrap: true });
+  await runSignalPipelineTick({ prisma, log: quiet, tickId: "phase6-c", execution: freshDeps });
   assert(
     JSON.stringify(fresh.getMarketState()) === JSON.stringify(adapter.getMarketState()),
     "market state diverged across identical runs (nondeterministic)",

@@ -85,15 +85,9 @@ jobs:
         run: pnpm --filter @nexus/db migrate:deploy
 
       - name: Run CI Runtime Execution Harness
-        # DEMO_MODE=true is belt-and-suspenders: the composed phases now pass
-        # demoBootstrap:true EXPLICITLY (self-owning; see services/workers/src/ci/*),
-        # so the harness no longer depends on this env. It is exported anyway for
-        # parity with the SIGKILL-restart worker (Phase 2 forces it) and to make the
-        # demo-lineage intent of this job explicit on the runner. The web read model
-        # ignores it (rows are labeled by origin, never filtered), so HTTP phases are
-        # unaffected.
-        env:
-          DEMO_MODE: "true"
+        # No synthetic-data env exists. Each phase seeds the deterministic CI
+        # fixture lineage EXPLICITLY (services/workers/src/ci/fixtures.ts) into
+        # this job's disposable database before driving the real runtime.
         run: pnpm --filter @nexus/workers ci:harness
 
   # ── Phase 9 — Real Market Data Integration seal (gated; needs the quant image) ──

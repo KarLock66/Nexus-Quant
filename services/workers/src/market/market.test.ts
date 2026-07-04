@@ -30,9 +30,8 @@ import {
   HistoricalProvider,
   RealtimeProvider,
   ReplayProvider,
-  demoMarketDataProvider,
-  DEMO_QUOTES,
 } from "./market-data.js";
+import { FIXTURE_QUOTES, fixtureQuoteProvider } from "../ci/fixtures.js";
 import {
   OrderTransitionError,
   deriveOrder,
@@ -133,11 +132,11 @@ describe("Market data — deterministic as-of providers, interface-only realtime
     expect(() => new RealtimeProvider().quote("BTC-PERP")).toThrow(/interface-only/);
   });
 
-  it("demo provider serves the demo symbols deterministically", () => {
-    const p = demoMarketDataProvider();
+  it("CI fixture provider serves the fixture symbols deterministically (test-only)", () => {
+    const p = fixtureQuoteProvider();
     expect(p.quote("BTC-PERP")?.price).toBe("30000.00000000");
     expect(p.quote("ETH-PERP")?.price).toBe("1850.00000000");
-    expect(DEMO_QUOTES).toHaveLength(2);
+    expect(FIXTURE_QUOTES).toHaveLength(2);
   });
 });
 
@@ -435,7 +434,7 @@ describe("MarketExecutionAdapter — integrates with the unchanged Phase 5 stage
   ];
 
   it("ENTERs flow to FILLED paper results and reconcile with the portfolio", async () => {
-    const adapter = createMarketExecutionAdapter();
+    const adapter = createMarketExecutionAdapter({ marketData: fixtureQuoteProvider() });
     const deps = createExecutionStage({ adapter });
     const r = await runExecutionStage(decisions, deps, ctx);
 
@@ -453,7 +452,7 @@ describe("MarketExecutionAdapter — integrates with the unchanged Phase 5 stage
 
   it("is deterministic end-to-end (fresh adapter twice -> identical state)", async () => {
     const run = async () => {
-      const adapter = createMarketExecutionAdapter();
+      const adapter = createMarketExecutionAdapter({ marketData: fixtureQuoteProvider() });
       const deps = createExecutionStage({ adapter });
       const r = await runExecutionStage(decisions, deps, ctx);
       return { portfolio: r.portfolioState, market: adapter.getMarketState() };
@@ -465,7 +464,7 @@ describe("MarketExecutionAdapter — integrates with the unchanged Phase 5 stage
   });
 
   it("re-running the same decisions is a no-op at target (idempotent net)", async () => {
-    const adapter = createMarketExecutionAdapter();
+    const adapter = createMarketExecutionAdapter({ marketData: fixtureQuoteProvider() });
     const deps = createExecutionStage({ adapter });
     const first = await runExecutionStage(decisions, deps, { ...ctx });
     const afterFirst = adapter.getMarketState();
@@ -478,7 +477,7 @@ describe("MarketExecutionAdapter — integrates with the unchanged Phase 5 stage
 
   it("simulated broker is deterministic and still reconciles", async () => {
     const mk = () =>
-      createMarketExecutionAdapter({ broker: SimulatedBroker, marketData: demoMarketDataProvider() });
+      createMarketExecutionAdapter({ broker: SimulatedBroker, marketData: fixtureQuoteProvider() });
     const run = async (adapter: ReturnType<typeof mk>) => {
       const deps = createExecutionStage({ adapter });
       const r = await runExecutionStage(decisions, deps, ctx);
@@ -489,7 +488,7 @@ describe("MarketExecutionAdapter — integrates with the unchanged Phase 5 stage
   });
 
   it("real broker -> fail-closed REJECTED (no fill, no state change, no crash)", async () => {
-    const adapter = createMarketExecutionAdapter({ broker: RealBroker });
+    const adapter = createMarketExecutionAdapter({ broker: RealBroker, marketData: fixtureQuoteProvider() });
     const deps = createExecutionStage({ adapter });
     const r = await runExecutionStage([decisionEvent("BTC-PERP", "LONG", "0.5000")], deps, ctx);
     expect(r.intentsEmitted).toBe(1);
@@ -514,7 +513,7 @@ describe("MarketExecutionAdapter — integrates with the unchanged Phase 5 stage
     const bus = new InProcessMarketBus();
     const kinds: string[] = [];
     bus.subscribe((e) => void kinds.push(e.kind));
-    const adapter = createMarketExecutionAdapter({ bus });
+    const adapter = createMarketExecutionAdapter({ bus, marketData: fixtureQuoteProvider() });
     const deps = createExecutionStage({ adapter });
     await runExecutionStage([decisionEvent("BTC-PERP", "LONG", "0.5000")], deps, ctx);
     expect(kinds).toContain("MARKET_DATA");

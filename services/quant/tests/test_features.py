@@ -66,8 +66,9 @@ def test_computes_full_vector_with_canonical_hash(client: TestClient):
     assert body["dq_report_id"] == "dq_test_1"
     # as_of_ts is the LAST candle's open time (point-in-time correctness).
     assert body["as_of_ts"].startswith("2024-01-11T09:00:00")
-    # The hash is exactly sha256(canonical JSON of the vector).
-    assert body["featureHash"] == compute_feature_hash(body["features"])
+    # The hash is the canonical provenance-envelope hash (vector + as-of ts +
+    # versioned logic hash) — recomputable byte-for-byte from the response.
+    assert body["featureHash"] == compute_feature_hash(body["features"], body["as_of_ts"])
 
 
 def test_constant_series_has_exactly_known_features(client: TestClient):

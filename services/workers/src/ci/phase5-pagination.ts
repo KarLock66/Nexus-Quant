@@ -11,7 +11,8 @@
  * Deterministic because no worker runs during this phase — the row set is frozen.
  */
 
-import { ensureSignalDemoChain, Prisma, prisma } from "@nexus/db";
+import { Prisma, prisma } from "@nexus/db";
+import { ensureCiFixtureLineage } from "./fixtures.js";
 import { assert, getJson, idsEqual, log } from "./lib.js";
 
 const PAGE_SYMBOL = "PAGE-TEST";
@@ -23,13 +24,16 @@ interface SignalDTO {
   createdAt: string;
   symbol: string;
 }
+/** Phase 11B signal envelope (see apps/web/src/lib/api-envelope.ts). */
 interface SignalsEnvelope {
-  data: SignalDTO[];
-  nextCursor: string | null;
+  status: "ok" | "error";
+  data: SignalDTO[] | null;
+  error: string | null;
+  meta: { source: string; timestamp: string; featureHash: string; nextCursor: string | null };
 }
 
 async function seedPaginationRows(featureSetId: string, strategyVersionId: string): Promise<void> {
-  const dqReportId = "demo-dq-btc-perp-h1"; // exists after ensureSignalDemoChain
+  const dqReportId = "ci-dq-btc-perp-h1"; // exists after ensureCiFixtureLineage
   const baseTs = Date.parse("2026-06-10T00:00:00.000Z");
   const baseCreated = Date.parse("2026-06-11T00:00:00.000Z");
 
@@ -79,18 +83,28 @@ async function seedPaginationRows(featureSetId: string, strategyVersionId: strin
   }
 }
 
-async function fetchPage(
-  baseUrl: string,
-  limit: number,
-  cursor?: string,
-): Promise<SignalsEnvelope> {
+/** Validated page projection: the envelope's data + pagination cursor. */
+interface Page {
+  data: SignalDTO[];
+  nextCursor: string | null;
+}
+
+async function fetchWithQuery(baseUrl: string, q: string): Promise<Page> {
+  const r = await getJson<SignalsEnvelope>(`${baseUrl}/api/v1/signals${q}`);
+  assert(r.status === 200, `GET /signals${q} -> HTTP ${r.status}`);
+  assert(r.body.status === "ok", `envelope status "${r.body.status}" (error: ${r.body.error})`);
+  assert(r.body.error === null, "ok envelope must carry error: null");
+  assert(r.body.data !== null, "ok envelope must carry a non-null data payload");
+  assert(typeof r.body.meta?.featureHash === "string", "envelope meta.featureHash missing");
+  return { data: r.body.data, nextCursor: r.body.meta.nextCursor };
+}
+
+async function fetchPage(baseUrl: string, limit: number, cursor?: string): Promise<Page> {
   const q =
     cursor === undefined
       ? `?limit=${limit}`
       : `?limit=${limit}&cursor=${encodeURIComponent(cursor)}`;
-  const r = await getJson<SignalsEnvelope>(`${baseUrl}/api/v1/signals${q}`);
-  assert(r.status === 200, `GET /signals${q} -> HTTP ${r.status}`);
-  return r.body;
+  return fetchWithQuery(baseUrl, q);
 }
 
 function assertOrdered(list: SignalDTO[]): void {
@@ -120,7 +134,7 @@ async function cleanupPaginationRows(): Promise<void> {
 export async function runPhase5(baseUrl: string): Promise<void> {
   log("info", "PHASE 5 — pagination / cursor consistency", { seeded: K, limit: LIMIT });
 
-  const chain = await ensureSignalDemoChain(prisma);
+  const chain = await ensureCiFixtureLineage(prisma);
   await seedPaginationRows(chain.featureSetId, chain.strategyVersion.id);
   try {
     await runPhase5Body(baseUrl);
@@ -144,7 +158,7 @@ async function runPhase5Body(baseUrl: string): Promise<void> {
   let guard = 0;
   // eslint-disable-next-line no-constant-condition
   while (true) {
-    const page: SignalsEnvelope = await fetchPage(baseUrl, LIMIT, cursor);
+    const page: Page = await fetchPage(baseUrl, LIMIT, cursor);
     pages.push(page.data.map((d) => d.id));
     walked.push(...page.data.map((d) => d.id));
     if (page.nextCursor === null) break;
@@ -165,12 +179,9 @@ async function runPhase5Body(baseUrl: string): Promise<void> {
   const keysetPage2 = pages[1];
   assert(keysetPage2 !== undefined, "expected at least 2 cursor pages");
   if (keysetPage2 !== undefined) {
-    const offsetPage2 = await getJson<SignalsEnvelope>(
-      `${baseUrl}/api/v1/signals?limit=${LIMIT}&offset=${LIMIT}`,
-    );
-    assert(offsetPage2.status === 200, `offset page HTTP ${offsetPage2.status}`);
+    const offsetPage2 = await fetchWithQuery(baseUrl, `?limit=${LIMIT}&offset=${LIMIT}`);
     assert(
-      idsEqual(offsetPage2.body.data.map((d) => d.id), keysetPage2),
+      idsEqual(offsetPage2.data.map((d) => d.id), keysetPage2),
       "offset page 2 != keyset page 2 (offset/keyset disagree)",
     );
   }

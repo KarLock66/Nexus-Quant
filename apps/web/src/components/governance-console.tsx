@@ -8,9 +8,10 @@ import { Panel, relTime } from "./console-ui";
 /**
  * Strategy Governance — live view of the Phase 8 governance state, read entirely
  * from persisted truth (Strategy, StrategyVersion, ApprovalRequest, AuditLog) via
- * `/api/v1/governance/overview`. The strategy registry is seeded by the demo
- * chain; the approval queue and audit trail render explicit empty states until
- * governance actions occur — no rows are fabricated.
+ * `/api/v1/governance/overview`. The strategy registry is populated only by
+ * governed registration (four-eyes review); the approval queue and audit trail
+ * render explicit empty states until governance actions occur — no rows are
+ * fabricated.
  */
 
 const STATUS_STYLE: Record<string, string> = {
@@ -57,7 +58,7 @@ export function GovernanceConsole() {
         hint="All strategies with immutable versions and lifecycle status — from Strategy/StrategyVersion."
         state={state}
         empty={data ? data.strategies.length === 0 : false}
-        emptyLabel="No strategies registered. Run pnpm db:seed:demo."
+        emptyLabel="No strategies registered — register one via the governance API (four-eyes review)."
       >
         {data && data.strategies.length > 0 && (
           <div className="space-y-3">

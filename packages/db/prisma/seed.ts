@@ -9,8 +9,9 @@ function hashPassword(password: string): string {
 }
 
 /**
- * Base reference data (config / governance). Exported so `demo-seed.ts` can
- * compose it with the demo signal chain without re-implementing any of it.
+ * Base reference data (config / governance) — the only seed. No synthetic
+ * market data or signal lineage is ever seeded; those must come from real
+ * ingestion + governed strategy registration.
  */
 export async function seedBase(prisma: PrismaClient) {
   // ── Admin user (dev only — change password immediately in any shared env)

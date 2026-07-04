@@ -15,8 +15,6 @@ export interface IngestionEnv {
   redisUrl: string | null;
   quantServiceUrl: string | null;
   sharedSecret: string | undefined;
-  demoMode: boolean;
-  demoSeed: number;
   ingestSymbols: Array<{ symbol: string; assetType: AssetType }>;
   ingestOptionUnderlyings: string[];
   ingestTimeframes: Timeframe[];
@@ -37,11 +35,10 @@ const DEFAULT_SYMBOLS = "BTC-USDT,ETH-USDT,BTC-PERP,ETH-PERP";
 const DEFAULT_UNDERLYINGS = "BTC,ETH";
 const DEFAULT_TIMEFRAMES = "H1,H4,D1";
 const DEFAULT_BACKFILL_DAYS = 730;
-const DEFAULT_DEMO_SEED = 42;
-// Default-off discipline: a bare daemon (no INGEST_EXCHANGE/CONNECTOR_EXCHANGE)
-// runs the OFFLINE deterministic DEMO venue — no live exchange connection happens
-// unless a real venue is explicitly opted in (e.g. INGEST_EXCHANGE=DERIBIT,BINANCE).
-const DEFAULT_EXCHANGE = "DEMO";
+// Real venues only: a bare daemon (no INGEST_EXCHANGE/CONNECTOR_EXCHANGE)
+// connects to the primary real venue over public endpoints. There is no
+// synthetic default — the DEMO venue is refused outright below.
+const DEFAULT_EXCHANGE = "DERIBIT";
 const DEFAULT_LIVE_TIMEFRAME = "H1";
 const DEFAULT_FLOW_POLL_MS = 300_000; // 5 min
 const DEFAULT_FEATURE_SET = "core-technical";
@@ -132,15 +129,13 @@ export function loadEnv(source: Record<string, string | undefined>): IngestionEn
     throw new Error("env INGEST_EXCHANGE parsed to an empty list");
   }
 
-  const demoMode = parseBool(read(source, "DEMO_MODE"));
-  // Fail-closed: the DEMO connector writes deterministic synthetic candles/ticks
-  // into the SAME market tables as live venues — fresh synthetic rows would become
-  // the newest mark for anything without an exchange filter. Running it therefore
-  // requires the explicit platform-wide demo opt-in, never a bare default.
-  if (exchanges.includes("DEMO") && !demoMode) {
+  // Fail-closed: the synthetic DEMO venue has been removed from the runtime.
+  // Its connector wrote deterministic synthetic candles/ticks into the SAME
+  // market tables as live venues — it is refused unconditionally.
+  if (exchanges.includes("DEMO")) {
     throw new Error(
-      "INGEST_EXCHANGE resolves to the synthetic DEMO venue but DEMO_MODE is not enabled. " +
-        "Set DEMO_MODE=true to opt into synthetic ingestion, or set INGEST_EXCHANGE to a real venue (e.g. DERIBIT).",
+      "INGEST_EXCHANGE resolves to the legacy synthetic DEMO venue, which has been removed. " +
+        "Set INGEST_EXCHANGE to a real venue (e.g. DERIBIT, BINANCE).",
     );
   }
 
@@ -156,8 +151,6 @@ export function loadEnv(source: Record<string, string | undefined>): IngestionEn
     redisUrl: read(source, "REDIS_URL"),
     quantServiceUrl: read(source, "QUANT_SERVICE_URL"),
     sharedSecret: read(source, "QUANT_SERVICE_SHARED_SECRET") ?? undefined,
-    demoMode,
-    demoSeed: parsePositiveInt(read(source, "DEMO_SEED"), DEFAULT_DEMO_SEED, "DEMO_SEED"),
     ingestSymbols: symbols,
     ingestOptionUnderlyings: parseList(
       read(source, "INGEST_OPTION_UNDERLYINGS"),

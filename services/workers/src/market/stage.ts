@@ -48,7 +48,7 @@ import {
 import { PaperBroker, type BrokerAdapter } from "./broker.js";
 import type { MarketEventStore } from "./event-store.js";
 import { InProcessMarketBus, type MarketBus } from "./market-bus.js";
-import { demoMarketDataProvider, type MarketDataProvider } from "./market-data.js";
+import type { MarketDataProvider } from "./market-data.js";
 import { quantizeQty } from "./money.js";
 import { deriveOrder, reduceOrder } from "./order.js";
 import {
@@ -72,6 +72,11 @@ import type {
 
 export interface CreateMarketExecutionAdapterOptions {
   broker?: BrokerAdapter;
+  /**
+   * REQUIRED at runtime: the price source orders are sized against and positions
+   * are marked to. Deliberately has NO default — a market adapter must never fall
+   * back to a fabricated quote source (the constructor throws when absent).
+   */
   marketData?: MarketDataProvider;
   accountConfig?: AccountConfig;
   /** Absolute notional tolerance for broker<->portfolio reconciliation. */
@@ -115,7 +120,12 @@ export class MarketExecutionAdapter implements ExecutionAdapter {
 
   constructor(opts: CreateMarketExecutionAdapterOptions = {}) {
     this.broker = opts.broker ?? PaperBroker;
-    this.marketData = opts.marketData ?? demoMarketDataProvider();
+    if (opts.marketData === undefined) {
+      throw new Error(
+        "MarketExecutionAdapter requires an explicit marketData provider — no synthetic fallback exists (fail-closed)",
+      );
+    }
+    this.marketData = opts.marketData;
     this.accountConfig = opts.accountConfig ?? DEFAULT_ACCOUNT_CONFIG;
     this.tolerance = opts.tolerance ?? DEFAULT_RECONCILIATION_TOLERANCE;
     this.bus = opts.bus ?? new InProcessMarketBus();

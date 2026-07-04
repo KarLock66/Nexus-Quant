@@ -10,7 +10,6 @@
     "start": "node dist/index.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "demo:ingest": "tsx src/cli/demo-ingest.ts",
     "live:ingest": "tsx src/cli/live-ingest.ts",
     "ci:seal-phase9": "tsx src/ci/seal-phase9-runtime.ts"
   },

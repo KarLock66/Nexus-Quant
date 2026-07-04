@@ -25,7 +25,8 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ensureSignalDemoChain, prisma } from "@nexus/db";
+import { prisma } from "@nexus/db";
+import { ensureCiFixtureLineage, fixtureQuoteProvider } from "./fixtures.js";
 import {
   assertDbReachable,
   log,
@@ -42,7 +43,6 @@ import { runSignalPipelineTick } from "../pipeline/orchestrator.js";
 import {
   FileMarketEventStore,
   createMarketExecutionAdapter,
-  demoMarketDataProvider,
   recoverMarketState,
 } from "../market/index.js";
 import { emptyAccount } from "../market/account.js";
@@ -146,7 +146,7 @@ async function main(): Promise<void> {
 
   try {
     await assertDbReachable();
-    await ensureSignalDemoChain(prisma);
+    await ensureCiFixtureLineage(prisma);
 
     // ── STEP A — BOOTSTRAP (real worker, real DB, real Redis) ──────────────────
     await step("A", async () => {
@@ -189,7 +189,7 @@ async function main(): Promise<void> {
     await step("B", async () => {
       const store = new FileRiskEventStore(join(dir, "risk-B.jsonl"));
       const engine = new RiskEngine({ store, limits: DEFAULT_RISK_LIMITS });
-      const adapter = createMarketExecutionAdapter({ marketData: demoMarketDataProvider() });
+      const adapter = createMarketExecutionAdapter({ marketData: fixtureQuoteProvider() });
       const deps = createExecutionStage({ adapter, riskGate: gateFor(engine, adapter) });
       const before = await prisma.engineSignal.count();
       const res = await runSignalPipelineTick({ prisma, log: quiet, tickId: "seal8-B", execution: deps });
@@ -213,7 +213,7 @@ async function main(): Promise<void> {
     await step("C", async () => {
       const store = new FileRiskEventStore(join(dir, "risk-C.jsonl"));
       const engine = new RiskEngine({ store, limits: limits({ maxPositionSize: 0.00001 }) });
-      const adapter = createMarketExecutionAdapter({ marketData: demoMarketDataProvider() });
+      const adapter = createMarketExecutionAdapter({ marketData: fixtureQuoteProvider() });
       const deps = createExecutionStage({ adapter, riskGate: gateFor(engine, adapter) });
       const res = await runSignalPipelineTick({ prisma, log: quiet, tickId: "seal8-C", execution: deps });
       assert((res.execution?.filled ?? -1) === 0, "expected 0 fills");
@@ -230,10 +230,10 @@ async function main(): Promise<void> {
     // ── STEP D — LEVERAGE BREACH ────────────────────────────────────────────────
     await step("D", async () => {
       const store = new FileRiskEventStore(join(dir, "risk-D.jsonl"));
-      // maxLeverage below the smallest single-order leverage (demo ~0.16) so the
+      // maxLeverage below the smallest single-order leverage (fixture ~0.16) so the
       // leverage check binds on EVERY order individually (not just the cumulative).
       const engine = new RiskEngine({ store, limits: limits({ maxLeverage: 0.1 }) });
-      const adapter = createMarketExecutionAdapter({ marketData: demoMarketDataProvider() });
+      const adapter = createMarketExecutionAdapter({ marketData: fixtureQuoteProvider() });
       const deps = createExecutionStage({ adapter, riskGate: gateFor(engine, adapter) });
       const res = await runSignalPipelineTick({ prisma, log: quiet, tickId: "seal8-D", execution: deps });
       assert((res.execution?.filled ?? -1) === 0, "expected 0 fills");
@@ -275,7 +275,7 @@ async function main(): Promise<void> {
       assert(types.includes("TRADING_HALTED"), "TRADING_HALTED not emitted");
       // Worker continues running + execution disabled: a real pipeline tick over the
       // halted engine completes (no throw) and fills nothing.
-      const adapter = createMarketExecutionAdapter({ marketData: demoMarketDataProvider() });
+      const adapter = createMarketExecutionAdapter({ marketData: fixtureQuoteProvider() });
       const deps = createExecutionStage({ adapter, riskGate: gateFor(engine, adapter) });
       const res = await runSignalPipelineTick({ prisma, log: quiet, tickId: "seal8-F", execution: deps });
       assert((res.execution?.filled ?? -1) === 0, "halted engine must execute nothing");
@@ -352,7 +352,7 @@ async function main(): Promise<void> {
       const store = new FileRiskEventStore(riskJournalI);
       const engine = new RiskEngine({ store, limits: DEFAULT_RISK_LIMITS });
       const adapter = createMarketExecutionAdapter({
-        marketData: demoMarketDataProvider(),
+        marketData: fixtureQuoteProvider(),
         eventStore: new FileMarketEventStore(marketJournalI),
       });
       const deps = createExecutionStage({ adapter, riskGate: gateFor(engine, adapter) });

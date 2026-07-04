@@ -246,11 +246,12 @@ export function SignalFeed() {
           <p className="mb-1 text-slate-200">No signals yet.</p>
           <p>
             The signal engine has not published any{" "}
-            <span className="font-mono text-slate-300">EngineSignal</span> rows. Start the
-            worker to populate them:
+            <span className="font-mono text-slate-300">EngineSignal</span> rows. The
+            pipeline generates them only from real ingested market data and an
+            approved ACTIVE strategy — run the ingestion daemon and the worker:
           </p>
           <pre className="mt-3 overflow-x-auto rounded-md border border-(--color-line) bg-(--color-surface-900) p-3 font-mono text-xs text-slate-300">
-            pnpm db:seed:demo{"\n"}pnpm --filter @nexus/workers dev
+            pnpm --filter @nexus/ingestion dev{"\n"}pnpm --filter @nexus/workers dev
           </pre>
         </div>
       ) : (

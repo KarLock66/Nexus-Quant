@@ -8,8 +8,8 @@
  * HTTP — with NO mocks and NO in-memory shortcuts:
  *
  *   Market Data -> DQ        : read the candles + DataQualityReport that the
- *                              ingestion step persisted (services/ingestion
- *                              `demo:ingest`) for the configured scope.
+ *                              live ingestion daemon persisted for the
+ *                              configured scope.
  *   Feature                  : POST /features/compute (Python authority for the
  *                              feature vector + featureHash) and persist exactly
  *                              one FeatureSnapshot via the production consumer.
@@ -106,7 +106,7 @@ interface Env {
 }
 
 function readEnv(): Env {
-  const exchange = (process.env["E2E_EXCHANGE"] ?? "DEMO") as Exchange;
+  const exchange = (process.env["E2E_EXCHANGE"] ?? "DERIBIT") as Exchange;
   if (!EXCHANGES.includes(exchange)) {
     throw new PipelineError("config", `invalid E2E_EXCHANGE: ${exchange}`);
   }
@@ -195,7 +195,7 @@ async function main(): Promise<void> {
     throw new PipelineError(
       "market-data+dq",
       `no DataQualityReport for ${env.exchange}:${env.symbol}:${env.timeframe} — ` +
-        "run the ingestion (demo:ingest) step first",
+        "run the live ingestion step first",
     );
   }
   if (dqRow.status !== "PASSED") {

@@ -2,7 +2,7 @@
  * PHASE 7 — Order & Position durability runtime verification.
  *
  * Drives the REAL signal pipeline tick with a DURABLE market adapter (paper broker
- * + an append-only JSONL journal) over the deterministic demo lineage, then proves
+ * + an append-only JSONL journal) over the deterministic fixture lineage, then proves
  * the Phase 7 guarantees end-to-end under runtime conditions:
  *
  *   1. durability     : every committed execution is appended to the journal; the
@@ -12,10 +12,10 @@
  *                       the rebuilt state EQUALS the live adapter state
  *   3. fail-closed    : a tampered journal (a divergent snapshot) HALTS recovery
  *                       with MarketRecoveryError — never silently trades on it
- *   4. continuity     : an adapter SEEDED from recovery re-runs the demo lineage as
+ *   4. continuity     : an adapter SEEDED from recovery re-runs the fixture lineage as
  *                       a no-op and still reconciles (broker<->portfolio)
  *
- * Like Phase 6 this needs only the idempotent demo upstream chain (no schema, no
+ * Like Phase 6 this needs only the idempotent fixture upstream chain (no schema, no
  * migration) plus a temp file for the journal. Fail-closed: the first failing
  * assertion aborts the run.
  */
@@ -23,7 +23,8 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ensureSignalDemoChain, prisma } from "@nexus/db";
+import { prisma } from "@nexus/db";
+import { ensureCiFixtureLineage, fixtureQuoteProvider } from "./fixtures.js";
 import { createExecutionStage } from "../execution/index.js";
 import { runSignalPipelineTick } from "../pipeline/orchestrator.js";
 import {
@@ -31,7 +32,6 @@ import {
   InMemoryMarketEventStore,
   MarketRecoveryError,
   createMarketExecutionAdapter,
-  demoMarketDataProvider,
   recoverMarketState,
 } from "../market/index.js";
 import { assert, log, makeLog } from "./lib.js";
@@ -39,7 +39,7 @@ import { assert, log, makeLog } from "./lib.js";
 export async function runPhase7(): Promise<void> {
   log("info", "PHASE 7 — durability (append-only journal, restart rebuild, fail-closed recovery)");
   const quiet = makeLog("warn");
-  await ensureSignalDemoChain(prisma);
+  await ensureCiFixtureLineage(prisma);
 
   const dir = await mkdtemp(join(tmpdir(), "nexus-ci-journal-"));
   const file = join(dir, "market-journal.jsonl");
@@ -48,14 +48,14 @@ export async function runPhase7(): Promise<void> {
     const store = new FileMarketEventStore(file);
     const adapter = createMarketExecutionAdapter({
       // paper broker is the default — deterministic, zero market impact.
-      marketData: demoMarketDataProvider(),
+      marketData: fixtureQuoteProvider(),
       eventStore: store,
     });
     const deps = createExecutionStage({ adapter });
 
-    // demoBootstrap explicit — self-owning, env-independent (see phase1 note / F1).
-    await runSignalPipelineTick({ prisma, log: quiet, tickId: "phase7-a", execution: deps, demoBootstrap: true });
-    await runSignalPipelineTick({ prisma, log: quiet, tickId: "phase7-b", execution: deps, demoBootstrap: true });
+    // Fixture lineage seeded explicitly above — the tick resolves persisted rows only.
+    await runSignalPipelineTick({ prisma, log: quiet, tickId: "phase7-a", execution: deps });
+    await runSignalPipelineTick({ prisma, log: quiet, tickId: "phase7-b", execution: deps });
 
     // ── 1) Durability: the journal recorded the committed executions ─────────────
     const records = await store.readAll();
@@ -92,9 +92,9 @@ export async function runPhase7(): Promise<void> {
     }
     assert(halted, "tampered journal did NOT halt recovery (fail-closed broken)");
 
-    // ── 4) Continuity: a seeded adapter re-runs the demo lineage as a no-op ───────
+    // ── 4) Continuity: a seeded adapter re-runs the fixture lineage as a no-op ───────
     const restarted = createMarketExecutionAdapter({
-      marketData: demoMarketDataProvider(),
+      marketData: fixtureQuoteProvider(),
       eventStore: new FileMarketEventStore(file),
       initialMarketState: recovered.marketState,
       initialPortfolioMirror: recovered.portfolioState,
@@ -103,7 +103,7 @@ export async function runPhase7(): Promise<void> {
       adapter: restarted,
       portfolioState: recovered.portfolioState,
     });
-    await runSignalPipelineTick({ prisma, log: quiet, tickId: "phase7-c", execution: restartedDeps, demoBootstrap: true });
+    await runSignalPipelineTick({ prisma, log: quiet, tickId: "phase7-c", execution: restartedDeps });
     assert(
       restarted.reconcileWith(restartedDeps.portfolioState).ok,
       "post-restart reconciliation failed (broker<->portfolio mismatch)",

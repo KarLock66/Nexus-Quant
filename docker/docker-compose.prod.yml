@@ -1,9 +1,10 @@
 # Nexus Quant — PRODUCTION runtime topology (Final production completion).
 #
-# Zero-demo discipline: NO service sets DEMO_MODE; the workers/ingestion refuse
-# synthetic paths without it, and `pnpm start:prod` fails validation if it leaks
-# in from a stray .env. All gates armed: RISK_ENGINE=on, CONTROL_PLANE=on,
-# durable journals on a named volume, persistent portfolio ledger on.
+# Zero-synthetic discipline: demo mode has been REMOVED from the platform —
+# no service can opt into synthetic data, and `pnpm start:prod` fails
+# validation if a legacy DEMO_MODE flag leaks in from a stray .env.
+# All gates armed: RISK_ENGINE=on, CONTROL_PLANE=on, durable journals on a
+# named volume, persistent portfolio ledger on.
 #
 # Usage (from repo root):
 #   docker compose -f docker/docker-compose.prod.yml up -d --build
@@ -95,7 +96,7 @@ services:
       REDIS_URL: redis://redis:6379
       QUANT_SERVICE_URL: http://quant:8000
       QUANT_SERVICE_SHARED_SECRET: ${QUANT_SERVICE_SHARED_SECRET:-}
-      # REAL venue market data (public endpoints; DEMO is refused without DEMO_MODE).
+      # REAL venue market data (public endpoints; the synthetic DEMO venue no longer exists).
       INGEST_EXCHANGE: ${INGEST_EXCHANGE:-DERIBIT}
       INGEST_SYMBOLS: ${INGEST_SYMBOLS:-BTC-PERP,ETH-PERP}
       INGEST_TIMEFRAMES: ${INGEST_TIMEFRAMES:-H1,H4,D1}

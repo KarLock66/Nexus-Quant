@@ -13,8 +13,3 @@ if (process.env.NODE_ENV !== "production") {
 }
 
 export * from "@prisma/client";
-export {
-  ensureSignalDemoChain,
-  type SignalDemoChain,
-  type ChainLogger,
-} from "./demo-signal-chain.js";

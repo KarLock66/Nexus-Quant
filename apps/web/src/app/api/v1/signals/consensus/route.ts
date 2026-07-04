@@ -1,9 +1,10 @@
-import { NextResponse } from "next/server";
 import { getConsensus } from "@/lib/trading-decision";
+import { signalError, signalOk } from "@/lib/api-envelope";
 
 /**
  * GET /api/v1/signals/consensus?symbol=BTC-PERP — multi-timeframe consensus (Section D)
  * for one symbol, computed only from timeframes that have a persisted FeatureSnapshot.
+ * Phase 11B signal envelope.
  */
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -11,15 +12,12 @@ export const runtime = "nodejs";
 export async function GET(request: Request) {
   const symbol = new URL(request.url).searchParams.get("symbol")?.trim();
   if (!symbol) {
-    return NextResponse.json({ error: "symbol query parameter is required" }, { status: 400 });
+    return signalError(400, "symbol query parameter is required");
   }
   try {
     const data = await getConsensus(symbol);
-    return NextResponse.json({ data, generatedAt: new Date().toISOString() });
+    return signalOk(data, { source: "db" });
   } catch (err) {
-    return NextResponse.json(
-      { error: "failed to load consensus", detail: String(err) },
-      { status: 500 },
-    );
+    return signalError(500, `failed to load consensus: ${String(err)}`);
   }
 }

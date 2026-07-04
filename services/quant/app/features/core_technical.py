@@ -27,11 +27,30 @@ quantized dict is hashed, returned, and persisted — so cross-build ULP noise
 (numpy / SIMD width / CPU microarch / libm) cannot flip the hash, and
 featureHash == sha256(canonical(persisted vector)) holds by construction.
 
-featureHash = sha256 hex over the canonical JSON of the (quantized) feature
-vector: keys sorted, separators (",", ":"), allow_nan=False (a non-finite
-feature value raises instead of hashing — fail-closed). This module is the
-ONLY featureHash implementation platform-wide; TS persists the value verbatim
-and never recomputes it.
+featureHash (Phase 11B envelope, v2) = sha256 hex over the canonical JSON of a
+PROVENANCE ENVELOPE, not the bare vector:
+
+    {
+      "as_of_ts":   <canonical ISO-8601 UTC ms of the LAST input candle>,
+      "feature_set": "core-technical",
+      "features":   <quantized feature vector>,
+      "logic_hash": FEATURE_PIPELINE_LOGIC_HASH,
+      "version":    1,
+    }
+
+so the hash depends on EXACTLY three things and nothing else:
+  1. the normalized input dataset  (the quantized vector derives only from it),
+  2. the versioned pipeline logic  (feature_set + version + logic_hash — a
+     sha256 over the pinned-numerics descriptor below),
+  3. the deterministic tick timestamp (the last candle's ts — data, never the
+     system clock).
+It must NOT and does NOT depend on: env vars, runtime parallelism, worker
+scheduling, or wall-clock jitter — there is no clock read and no env read on
+this path, and every reduction is order-invariant (math.fsum, ADR-0001).
+Canonical JSON: keys sorted, separators (",", ":"), allow_nan=False (a
+non-finite feature value raises instead of hashing — fail-closed). This module
+is the ONLY featureHash implementation platform-wide; TS persists the value
+verbatim and never recomputes it.
 """
 
 from __future__ import annotations
@@ -39,6 +58,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+from datetime import datetime, timezone
 
 import numpy as np
 
@@ -55,6 +75,33 @@ MIN_CANDLES = 201
 # 8-decimal OHLCV). IMMUTABLE part of core-technical v1 — changing it is a new
 # feature-set version, never an edit.
 FEATURE_VALUE_SIG_FIGS = 10
+
+# ── Versioned pipeline logic hash (Phase 11B) ────────────────────────────────
+# A machine-checkable fingerprint of the PINNED numerics this module implements.
+# Any change to the logic below MUST be reflected here (and is by definition a
+# new feature-set version); the descriptor is hashed into every featureHash so
+# a hash can never silently survive a logic change.
+PIPELINE_LOGIC_DESCRIPTOR: dict[str, object] = {
+    "feature_set": FEATURE_SET_NAME,
+    "version": FEATURE_SET_VERSION,
+    "indicators": {
+        "ema": {"periods": [20, 50, 200], "seed": "sma-first-period", "k": "2/(period+1)"},
+        "rsi": {"period": 14, "smoothing": "wilder", "flat": 50.0},
+        "atr": {"period": 14, "smoothing": "wilder"},
+        "realized_vol": {"windowBars": 30, "ddof": 1, "returns": "log", "annualized": False},
+        "volume_zscore": {"windowBars": 100, "ddof": 1, "zero_std": 0.0},
+        "donchian": {"period": 20},
+    },
+    "canonicalization": {
+        "sig_figs": FEATURE_VALUE_SIG_FIGS,
+        "negative_zero": "normalized-to-positive-zero",
+        "reductions": "math.fsum (order-invariant, ADR-0001)",
+    },
+    "envelope": "sha256/canonical-json/v2 (as_of_ts + feature_set + features + logic_hash + version)",
+}
+FEATURE_PIPELINE_LOGIC_HASH = hashlib.sha256(
+    json.dumps(PIPELINE_LOGIC_DESCRIPTOR, sort_keys=True, separators=(",", ":")).encode("utf-8")
+).hexdigest()
 
 
 class FeatureComputationError(Exception):
@@ -148,9 +195,44 @@ def _canon(x: float) -> float:
     return 0.0 if q == 0.0 else q
 
 
-def compute_feature_hash(features: dict[str, float]) -> str:
+def canonicalize_ts(value: str | datetime) -> str:
+    """Canonical ISO-8601 UTC millisecond form ("YYYY-MM-DDTHH:MM:SS.mmmZ").
+
+    The as_of timestamp participates in the featureHash envelope, so its
+    serialization must be byte-stable regardless of the caller's format
+    ("...Z", "+00:00", microseconds, naive-assumed-UTC all normalize to one
+    form). Deterministic: derived only from the value, never the clock.
+    """
+    if isinstance(value, str):
+        raw = value.strip()
+        try:
+            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError as err:
+            raise InvalidMarketDataError(f"unparseable candle ts: {raw!r}") from err
+    else:
+        parsed = value
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    parsed = parsed.astimezone(timezone.utc)
+    ms = parsed.microsecond // 1000
+    return f"{parsed.strftime('%Y-%m-%dT%H:%M:%S')}.{ms:03d}Z"
+
+
+def compute_feature_hash(features: dict[str, float], as_of_ts: str | datetime) -> str:
+    """sha256 over the canonical provenance envelope (see module docstring).
+
+    Depends ONLY on the quantized vector (normalized input data), the versioned
+    pipeline logic hash, and the deterministic as-of timestamp.
+    """
+    envelope = {
+        "as_of_ts": canonicalize_ts(as_of_ts),
+        "feature_set": FEATURE_SET_NAME,
+        "features": features,
+        "logic_hash": FEATURE_PIPELINE_LOGIC_HASH,
+        "version": FEATURE_SET_VERSION,
+    }
     canonical = json.dumps(
-        features, sort_keys=True, separators=(",", ":"), allow_nan=False
+        envelope, sort_keys=True, separators=(",", ":"), allow_nan=False
     )
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
@@ -161,12 +243,19 @@ def compute_core_technical(
     """Compute the v1 vector as-of the LAST candle in the (ascending) batch.
 
     `candles` items carry decimal-string OHLCV under keys open/high/low/
-    close/volume. Raises InsufficientDataError / InvalidMarketDataError —
-    the router maps them to structured 422s.
+    close/volume plus the candle's `ts` — the LAST candle's ts is the
+    deterministic as-of timestamp bound into the featureHash envelope.
+    Raises InsufficientDataError / InvalidMarketDataError — the router maps
+    them to structured 422s.
     """
     if len(candles) < MIN_CANDLES:
         raise InsufficientDataError(
             f"core-technical v1 requires >= {MIN_CANDLES} candles, got {len(candles)}"
+        )
+    last_ts = candles[-1].get("ts")
+    if last_ts is None:
+        raise InvalidMarketDataError(
+            "last candle carries no ts — the deterministic as-of timestamp is required (fail-closed)"
         )
 
     closes = np.array(
@@ -224,6 +313,7 @@ def compute_core_technical(
             )
 
     # Canonicalize ONCE (MIR-1): the quantized dict is hashed AND returned, so
-    # featureHash == sha256(canonical(persisted vector)) holds (MIR-2).
+    # featureHash == sha256(canonical envelope over the persisted vector +
+    # as-of + logic version) holds by construction (MIR-2, envelope v2).
     features = {name: _canon(value) for name, value in raw.items()}
-    return features, compute_feature_hash(features)
+    return features, compute_feature_hash(features, last_ts)

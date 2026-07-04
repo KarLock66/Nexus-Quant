@@ -17,7 +17,6 @@ import {
   RealtimeProvider,
   createMarketExecutionAdapter,
   createRealBroker,
-  demoMarketDataProvider,
   readDeribitEnvConfig,
   readPortfolioLedgerEnabled,
   readPortfolioLedgerIdentity,
@@ -110,19 +109,6 @@ function readControlPlaneEnabled(): boolean {
 }
 const controlPlaneEnabled = readControlPlaneEnabled();
 
-/**
- * Demo-chain bootstrap is OPT-IN via DEMO_MODE (the platform-wide demo flag) and
- * DEFAULT-OFF: a bare production worker never upserts the synthetic demo lineage —
- * it resolves persisted rows and skips ticks (fail-closed) until a real lineage
- * exists. CI spawners set DEMO_MODE=true explicitly (their invariants are keyed
- * on the demo lineage).
- */
-function readDemoMode(): boolean {
-  const raw = process.env["DEMO_MODE"];
-  return raw !== undefined && ["true", "1", "yes"].includes(raw.trim().toLowerCase());
-}
-const demoMode = readDemoMode();
-
 /** Risk is "active" for the control plane iff opted in, built, and not halted. */
 function isRiskActive(): boolean {
   return readRiskEngineEnabled() && riskEngineRef !== undefined && !riskEngineRef.isHalted();
@@ -162,7 +148,6 @@ const marketBroker = readMarketBroker();
  * deterministic Phase 6 brokers. `real` is the LIVE venue path and is armed
  * ONLY when every production prerequisite holds — otherwise undefined is
  * returned and execution stays UNARMED (fail-closed; signals still flow):
- *   - DEMO_MODE must be OFF (real orders must never mark against demo quotes)
  *   - MARKET_DATA_SOURCE=realtime (real marks are required to size real orders)
  *   - MARKET_JOURNAL_PATH set (a live venue position without a durable local
  *     journal could not be reconstructed after a restart)
@@ -181,9 +166,6 @@ function buildBroker(kind: "paper" | "simulated" | "real"): BrokerAdapter | unde
     });
     return undefined;
   };
-  if (demoMode) {
-    return refuse("DEMO_MODE is enabled; a real venue must never run with synthetic demo marks");
-  }
   if (process.env["MARKET_DATA_SOURCE"] !== "realtime") {
     return refuse("MARKET_DATA_SOURCE=realtime is required to size/mark real orders");
   }
@@ -221,31 +203,23 @@ function readRiskEngineEnabled(): boolean {
 }
 
 /**
- * Phase 9 market-data source (zero-demo discipline).
+ * Phase 9 market-data source (zero-synthetic discipline).
  *
  *   MARKET_DATA_SOURCE=realtime  -> the REAL exchange feed (the marks the ingestion
  *                                   daemon persists), served through the Phase 7
  *                                   RealtimeProvider over a DB-backed transport.
- *                                   DEMO-venue rows are excluded unless DEMO_MODE.
- *   unset + DEMO_MODE=true       -> deterministic demo quotes (explicit opt-in only;
- *                                   CI harnesses and the local demo stack).
- *   unset + no DEMO_MODE         -> returns undefined — FAIL-CLOSED. A production
- *                                   broker must never silently mark real orders
- *                                   against synthetic demo quotes; the caller leaves
- *                                   execution UNARMED (signals still flow).
+ *                                   Legacy DEMO-venue rows are always excluded.
+ *   unset                        -> returns undefined — FAIL-CLOSED. A broker must
+ *                                   never silently mark real orders against a
+ *                                   fabricated price; the caller leaves execution
+ *                                   UNARMED (signals still flow).
  */
 function buildMarketDataProvider(): MarketDataProvider | undefined {
   if (process.env["MARKET_DATA_SOURCE"] === "realtime") {
-    const transport = new DbQuoteTransport(prisma, { allowDemoVenue: demoMode });
+    const transport = new DbQuoteTransport(prisma);
     transport.start();
-    log("info", "Phase 9 realtime market-data provider enabled (DB-backed real marks)", {
-      demoVenueAdmitted: demoMode,
-    });
+    log("info", "Phase 9 realtime market-data provider enabled (DB-backed real marks)");
     return new RealtimeProvider(transport);
-  }
-  if (demoMode) {
-    log("warn", "DEMO_MODE: execution will mark orders against synthetic demo quotes");
-    return demoMarketDataProvider();
   }
   return undefined;
 }
@@ -422,17 +396,16 @@ async function buildExecution(): Promise<ExecutionStageDeps | undefined> {
     }
   }
 
-  // FAIL-CLOSED (zero-demo): a broker with no explicit market-data source and no
-  // DEMO_MODE opt-in has no legitimate price to size/mark against — execution
-  // stays UNARMED (signals still flow; NO orders execute).
+  // FAIL-CLOSED (zero-synthetic): a broker with no explicit market-data source
+  // has no legitimate price to size/mark against — execution stays UNARMED
+  // (signals still flow; NO orders execute).
   const marketData = buildMarketDataProvider();
   if (marketData === undefined) {
     log("error", "MARKET_BROKER is set but no market-data source is configured — execution unarmed (fail-closed)", {
       component: "market.config",
       category: "CONFIG",
       severity: "CRITICAL",
-      detail:
-        "set MARKET_DATA_SOURCE=realtime (real marks from the ingestion daemon) or opt into DEMO_MODE=true (synthetic demo quotes)",
+      detail: "set MARKET_DATA_SOURCE=realtime (real marks from the ingestion daemon)",
     });
     return undefined;
   }
@@ -520,7 +493,6 @@ async function tick(): Promise<void> {
       log,
       tickId,
       bus,
-      demoBootstrap: demoMode,
       ...(execution ? { execution } : {}),
     });
     if (controlPlane && (result.execution?.filled ?? 0) > 0) controlPlane.noteExecution();
@@ -562,7 +534,6 @@ async function main(): Promise<void> {
   log("info", "workers service starting (signal pipeline runtime)", {
     tickMs: TICK_MS,
     controlPlane: controlPlaneEnabled,
-    demoBootstrap: demoMode,
   });
 
   // Build the long-lived seams before the first tick (recovery is async + fail-closed).

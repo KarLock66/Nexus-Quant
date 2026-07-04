@@ -9,8 +9,8 @@
  * reports PASS/FAIL; the run is SEALED only if every step passes.
  *
  * Two modes (same code path, same assertions):
- *   offline (default)  DEMO connector through the real pipeline — deterministic,
- *                      no network, what CI runs by default.
+ *   offline (default)  synthetic fixture connector (src/ci/, CI-only) through the
+ *                      real pipeline — deterministic, no network, DISPOSABLE DB.
  *   live (PHASE9_LIVE=1) real Deribit + Binance public feeds — the true seal,
  *                      gated to a manual/workflow_dispatch CI job (network).
  *
@@ -29,9 +29,10 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ensureSignalDemoChain, prisma } from "@nexus/db";
+import { prisma } from "@nexus/db";
 import type { Exchange } from "@nexus/core";
-import { resolveConnector } from "../connectors/index.js";
+import { resolveConnector, type ExchangeConnector } from "../connectors/index.js";
+import { createSyntheticFixtureConnector } from "./synthetic-connector.js";
 import { bootstrap, runLiveIngestion, type LiveIngestionDeps, type LiveIngestionOptions } from "../pipeline/live.js";
 import { createPublisher } from "../lib/events.js";
 
@@ -40,12 +41,25 @@ const LIVE = process.env["PHASE9_LIVE"] === "1";
 const QUANT_URL = process.env["QUANT_SERVICE_URL"] ?? "http://localhost:8000";
 const SHARED_SECRET = process.env["QUANT_SERVICE_SHARED_SECRET"] ?? "";
 const BACKFILL_DAYS = Number.parseInt(process.env["SEAL_BACKFILL_DAYS"] ?? "120", 10);
-const EXCHANGES: Exchange[] = LIVE ? ["DERIBIT", "BINANCE"] : ["DEMO"];
+const EXCHANGES: Exchange[] = LIVE ? ["DERIBIT", "BINANCE"] : ["DERIBIT"];
+/**
+ * Offline mode drives the SAME pipeline through the deterministic synthetic
+ * fixture connector (CI-only), labeled with the venue under seal so its rows
+ * are admissible — legitimate ONLY because this seal owns a disposable DB.
+ */
+const connectorFor = (exchange: Exchange): ExchangeConnector =>
+  LIVE ? resolveConnector(exchange) : createSyntheticFixtureConnector(42, exchange);
 const SYMBOLS = [
   { symbol: "BTC-PERP", assetType: "PERP" as const },
   { symbol: "ETH-PERP", assetType: "PERP" as const },
 ];
-const DEMO_FIXTURE_IDS = new Set(["demo-fs-btc-perp-h1", "demo-fs-eth-perp-h1"]);
+/** Legacy/CI fixture snapshot ids — never the "real snapshot" under seal. */
+const LEGACY_FIXTURE_IDS = new Set([
+  "demo-fs-btc-perp-h1",
+  "demo-fs-eth-perp-h1",
+  "ci-fs-btc-perp-h1",
+  "ci-fs-eth-perp-h1",
+]);
 
 const HERE = dirname(fileURLToPath(import.meta.url)); // services/ingestion/{src|dist}/ci
 const REPO_ROOT = resolve(HERE, "..", "..", "..", "..");
@@ -90,10 +104,9 @@ function spawnWorkerTick(extraEnv: Record<string, string>): { kill: () => void; 
   const args = useDist ? [WORKER_DIST] : ["--import", "tsx", resolve(REPO_ROOT, "services", "workers", "src", "index.ts")];
   const child = spawn(process.execPath, args, {
     cwd: resolve(REPO_ROOT, "services", "workers"),
-    // The seal's worker step relies on the demo strategy lineage existing (the
-    // real snapshot supersedes demo fixtures by ts) — opt the bootstrap in
-    // explicitly; production workers default it off.
-    env: { ...process.env, DEMO_MODE: "true", ...extraEnv },
+    // The worker resolves persisted lineage only — ensureSealLineage() seeded
+    // the ACTIVE strategy before this spawn; the real snapshot is already in.
+    env: { ...process.env, ...extraEnv },
     stdio: ["ignore", "pipe", "pipe"],
   });
   const lines: string[] = [];
@@ -136,7 +149,62 @@ async function latestRealSnapshot(): Promise<{ id: string; featureHash: string }
     take: 5,
     select: { id: true, featureHash: true },
   });
-  return rows.find((r) => !DEMO_FIXTURE_IDS.has(r.id)) ?? null;
+  return rows.find((r) => !LEGACY_FIXTURE_IDS.has(r.id)) ?? null;
+}
+
+// ── Seal lineage (catalog + ACTIVE strategy so the worker step can generate) ───
+/**
+ * Seed the minimal PERSISTED lineage the real worker tick requires: the
+ * core-technical v1 FeatureSetDefinition (catalog) and one ACTIVE
+ * StrategyVersion. NO FeatureSnapshots are seeded — step D must prove the
+ * real pipeline produced one. Idempotent (stable ids); CI/seal use only.
+ */
+async function ensureSealLineage(): Promise<void> {
+  await prisma.featureSetDefinition.upsert({
+    where: { name_version: { name: "core-technical", version: 1 } },
+    update: {},
+    create: {
+      name: "core-technical",
+      version: 1,
+      domain: "TECHNICAL",
+      createdBy: "ci:seal-phase9",
+      spec: {
+        indicators: [
+          { name: "ema", params: { periods: [20, 50, 200] } },
+          { name: "rsi", params: { period: 14 } },
+          { name: "realized_vol", params: { windowBars: 30 } },
+        ],
+        canonicalOrder: "alphabetical",
+        hash: "sha256",
+      },
+    },
+  });
+  const params = { rsiLongMin: 55, rsiShortMax: 45, maxRealizedVol: 0.02 };
+  await prisma.strategy.upsert({
+    where: { id: "ci-seal-strategy-core-technical" },
+    update: {},
+    create: { id: "ci-seal-strategy-core-technical", name: "Seal Core-Technical", createdBy: "ci:seal-phase9" },
+  });
+  await prisma.strategyVersion.upsert({
+    where: { id: "ci-seal-strategy-core-technical-v1" },
+    update: { parameters: params },
+    create: {
+      id: "ci-seal-strategy-core-technical-v1",
+      strategyId: "ci-seal-strategy-core-technical",
+      version: 1,
+      status: "ACTIVE",
+      description: "Deterministic EMA-trend / RSI-regime / volatility-filter reference strategy (Phase 9 seal).",
+      hypothesis: "Trend-following with RSI confirmation has positive expectancy outside high-vol regimes.",
+      entryLogic: "EMA(20)>EMA(50)>EMA(200) & RSI>=rsiLongMin -> LONG; mirror for SHORT.",
+      exitLogic: "Volatility filter forces FLAT when realized_vol_30 > maxRealizedVol.",
+      riskRules: "No signal below DQ 90; volatility filter dominates the directional bias.",
+      failureConditions: "Regime shift to PANIC/HIGH_VOL; realized vol breach; DQ degradation.",
+      parameters: params,
+      validRegimes: ["TRENDING_BULL", "TRENDING_BEAR", "RANGE_BOUND"],
+      volatilityBounds: { min: 0, max: params.maxRealizedVol },
+      createdBy: "ci:seal-phase9",
+    },
+  });
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────────
@@ -145,7 +213,7 @@ async function main(): Promise<void> {
 
   // Preconditions: DB reachable, feature-set catalog seeded, quant reachable.
   await prisma.$queryRaw`SELECT 1`;
-  await ensureSignalDemoChain(prisma); // creates the core-technical FeatureSetDefinition + strategy
+  await ensureSealLineage(); // creates the core-technical FeatureSetDefinition + an ACTIVE strategy
   const health = await fetch(`${QUANT_URL.replace(/\/+$/, "")}/health`).catch(() => null);
   if (health === null || !health.ok) {
     throw new Error(`quant service unreachable at ${QUANT_URL} (start it via docker-compose.ci.yml)`);
@@ -178,7 +246,7 @@ async function main(): Promise<void> {
     // ── A + B + C + D: bootstrap + live stream for every configured venue ──────
     const handles = [];
     for (const exchange of EXCHANGES) {
-      const connector = resolveConnector(exchange, { demoSeed: 42 });
+      const connector = connectorFor(exchange);
       const handle = await runLiveIngestion(connector, optsFor(), deps);
       handles.push(handle);
     }
@@ -239,7 +307,7 @@ async function main(): Promise<void> {
           "EngineSignal from a real (non-demo) snapshot",
           async () => {
             const sig = await prisma.engineSignal.findFirst({
-              where: { symbol: "BTC-PERP", featureSnapshotId: { notIn: [...DEMO_FIXTURE_IDS] } },
+              where: { symbol: "BTC-PERP", featureSnapshotId: { notIn: [...LEGACY_FIXTURE_IDS] } },
               orderBy: { createdAt: "desc" },
             });
             return sig !== null;
@@ -250,7 +318,7 @@ async function main(): Promise<void> {
         worker.kill();
       }
       const sig = await prisma.engineSignal.findFirst({
-        where: { symbol: "BTC-PERP", featureSnapshotId: { notIn: [...DEMO_FIXTURE_IDS] } },
+        where: { symbol: "BTC-PERP", featureSnapshotId: { notIn: [...LEGACY_FIXTURE_IDS] } },
         orderBy: { createdAt: "desc" },
       });
       if (sig === null) throw new Error("no EngineSignal from a real snapshot");
@@ -270,7 +338,7 @@ async function main(): Promise<void> {
     await step("G restart recovery (idempotent re-bootstrap)", async () => {
       const before = await counts();
       for (const exchange of EXCHANGES) {
-        const connector = resolveConnector(exchange, { demoSeed: 42 });
+        const connector = connectorFor(exchange);
         await bootstrap(connector, optsFor(), deps);
       }
       const after = await counts();

@@ -4,13 +4,13 @@
  * Deterministic helpers used by every phase: structured logging, fail-closed
  * assertions, condition-based waiting (NO fixed sleeps — we poll an observable
  * state with a bounded deadline), a bounded-concurrency promise pool, EngineSignal
- * DB helpers keyed on the deterministic demo lineage, a manual SSE client (full
- * control over Last-Event-ID + frame ids), and child-process spawners for the
- * worker (single node PID so SIGKILL hits it directly) and the web server.
+ * DB helpers keyed on the deterministic CI fixture lineage, a manual SSE client
+ * (full control over Last-Event-ID + frame ids), and child-process spawners for
+ * the worker (single node PID so SIGKILL hits it directly) and the web server.
  *
- * The demo signal chain (packages/db demo-signal-chain.ts) produces EXACTLY two
+ * The CI fixture lineage (src/ci/fixtures.ts) produces EXACTLY two
  * (featureSnapshotId, strategyVersionId) pairs — BTC-PERP and ETH-PERP — so the
- * EngineSignal row count for the demo lineage is an invariant (exactly 2). Any
+ * EngineSignal row count for the fixture lineage is an invariant (exactly 2). Any
  * deviation is a duplicate write and a hard failure. That invariant, not timing,
  * is what every assertion rests on.
  */
@@ -121,11 +121,11 @@ export function idsEqual(a: readonly string[], b: readonly string[]): boolean {
   return true;
 }
 
-// ── EngineSignal / demo-lineage DB helpers ───────────────────────────────────
-/** Stable FeatureSnapshot ids of the deterministic demo chain (exactly two). */
-export const DEMO_SNAPSHOT_IDS = ["demo-fs-btc-perp-h1", "demo-fs-eth-perp-h1"] as const;
+// ── EngineSignal / fixture-lineage DB helpers ────────────────────────────────
+/** Stable FeatureSnapshot ids of the CI fixture lineage (exactly two). */
+export const FIXTURE_SNAPSHOT_IDS = ["ci-fs-btc-perp-h1", "ci-fs-eth-perp-h1"] as const;
 
-export interface DemoRow {
+export interface FixtureRow {
   id: string;
   featureSnapshotId: string;
   strategyVersionId: string;
@@ -138,7 +138,7 @@ export interface DemoRow {
   createdAt: Date;
 }
 
-const DEMO_SELECT = {
+const FIXTURE_SELECT = {
   id: true,
   featureSnapshotId: true,
   strategyVersionId: true,
@@ -151,24 +151,24 @@ const DEMO_SELECT = {
   createdAt: true,
 } as const;
 
-export async function demoRows(): Promise<DemoRow[]> {
+export async function fixtureRows(): Promise<FixtureRow[]> {
   const rows = await prisma.engineSignal.findMany({
-    where: { featureSnapshotId: { in: [...DEMO_SNAPSHOT_IDS] } },
+    where: { featureSnapshotId: { in: [...FIXTURE_SNAPSHOT_IDS] } },
     orderBy: { featureSnapshotId: "asc" },
-    select: DEMO_SELECT,
+    select: FIXTURE_SELECT,
   });
   return rows.map((r) => ({ ...r, confidence: r.confidence.toString() }));
 }
 
-export async function countDemoRows(): Promise<number> {
+export async function countFixtureRows(): Promise<number> {
   return prisma.engineSignal.count({
-    where: { featureSnapshotId: { in: [...DEMO_SNAPSHOT_IDS] } },
+    where: { featureSnapshotId: { in: [...FIXTURE_SNAPSHOT_IDS] } },
   });
 }
 
-export async function resetDemoEngineSignals(): Promise<void> {
+export async function resetFixtureEngineSignals(): Promise<void> {
   await prisma.engineSignal.deleteMany({
-    where: { featureSnapshotId: { in: [...DEMO_SNAPSHOT_IDS] } },
+    where: { featureSnapshotId: { in: [...FIXTURE_SNAPSHOT_IDS] } },
   });
 }
 
@@ -310,10 +310,9 @@ export function spawnWorker(extraEnv: Record<string, string>): WorkerHandle {
     : ["--import", "tsx", resolve(WORKERS_DIR, "src", "index.ts")];
   const child = spawn(process.execPath, args, {
     cwd: WORKERS_DIR,
-    // The harness invariants are keyed on the demo lineage (see file header), so
-    // the demo bootstrap is opted in EXPLICITLY here — production workers default
-    // it off. extraEnv can still override for phases that need it disabled.
-    env: { ...process.env, DEMO_MODE: "true", ...extraEnv },
+    // The worker resolves ONLY persisted lineage (no bootstrap flag exists) —
+    // callers seed the CI fixture lineage BEFORE spawning (see fixtures.ts).
+    env: { ...process.env, ...extraEnv },
     stdio: ["ignore", "pipe", "pipe"],
   });
 

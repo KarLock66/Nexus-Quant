@@ -143,19 +143,3 @@ export class RealtimeProvider implements MarketDataProvider {
     return q === null ? null : normalize(q);
   }
 }
-
-/**
- * Deterministic demo quotes for the runtime-continuity chain (BTC-PERP, ETH-PERP),
- * aligned to the demo FeatureSnapshot timestamp. Fixed values -> the market layer
- * is deterministic for the demo lineage without coupling to feature internals
- * (features carry EMAs/RSI/vol, not a clean spot price).
- */
-export const DEMO_QUOTES: Quote[] = [
-  { symbol: "BTC-PERP", ts: "2026-06-01T00:00:00.000Z", price: quantizePrice(30000) },
-  { symbol: "ETH-PERP", ts: "2026-06-01T00:00:00.000Z", price: quantizePrice(1850) },
-];
-
-/** A ready-made deterministic provider over the demo quotes. */
-export function demoMarketDataProvider(): MarketDataProvider {
-  return new HistoricalProvider(DEMO_QUOTES);
-}

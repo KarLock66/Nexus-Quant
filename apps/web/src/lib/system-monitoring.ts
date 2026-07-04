@@ -248,20 +248,9 @@ export async function getConnectorStatus(): Promise<ConnectorStatus[]> {
     })
     .sort((a, b) => a.exchange.localeCompare(b.exchange));
 
-  // Demo mode with an empty market-data table: surface the demo connector as
-  // unknown rather than returning a misleading empty list.
-  if (connectors.length === 0 && process.env.DEMO_MODE === "true") {
-    connectors.push({
-      exchange: Exchange.DEMO,
-      status: "unknown",
-      lastSyncAt: null,
-      lagSeconds: null,
-      rowsLast24h: 0,
-      symbols: [],
-      error: "demo connector idle — no candles ingested yet",
-    });
-  }
-
+  // An empty market-data table yields an EMPTY list — the truth. No synthetic
+  // connector entry is ever injected; the UI renders its own explicit
+  // "no connectors reporting" state.
   return connectors;
 }
 

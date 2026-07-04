@@ -183,19 +183,23 @@ async function checkDatabase(prismaMod: Awaited<ReturnType<typeof tryPrisma>>): 
 }
 
 /**
- * Zero-demo discipline: production validation FAILS while the platform-wide
- * DEMO_MODE opt-in is set — a production stack must never serve synthetic data.
+ * Zero-synthetic discipline: demo mode no longer exists anywhere in the
+ * runtime. Validation FAILS if any legacy synthetic-data flag is still present
+ * in the environment (e.g. resurrected by a stray .env via Prisma's dotenv
+ * auto-load) — a production stack must carry no trace of it.
  */
-function checkDemoMode(): CheckResult {
-  const raw = (process.env.DEMO_MODE ?? "").trim().toLowerCase();
-  const enabled = ["true", "1", "yes"].includes(raw);
+function checkLegacySyntheticFlags(): CheckResult {
+  const legacy = ["DEMO_MODE", "DEMO_SEED", "NEXT_PUBLIC_DEMO_MODE"].filter(
+    (k) => (process.env[k] ?? "").trim() !== "",
+  );
   return {
-    name: "demo-mode",
+    name: "synthetic-flags",
     required: true,
-    status: enabled ? "down" : "ok",
-    detail: enabled
-      ? "DEMO_MODE is enabled — synthetic data opt-in is active; unset it for production"
-      : "DEMO_MODE off (live data only)",
+    status: legacy.length > 0 ? "down" : "ok",
+    detail:
+      legacy.length > 0
+        ? `legacy synthetic-data flag(s) present: ${legacy.join(", ")} — remove them (demo mode has been removed from the platform)`
+        : "no legacy synthetic-data flags present (live data only)",
     latencyMs: null,
   };
 }
@@ -317,7 +321,7 @@ async function main(): Promise<void> {
 
   const prismaMod = await tryPrisma();
   const checks = await Promise.all([
-    Promise.resolve(checkDemoMode()),
+    Promise.resolve(checkLegacySyntheticFlags()),
     Promise.resolve(checkBrokerConfig()),
     checkDatabase(prismaMod),
     checkRedis(),

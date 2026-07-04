@@ -11,7 +11,7 @@ import type {
  * Server-only data layer for the Strategy Governance page. Reads real persisted
  * state (Prisma): the Strategy registry with immutable StrategyVersions, the
  * ApprovalRequest queue, and the AuditLog. Nothing is fabricated — the registry
- * is seeded by the demo signal chain; an empty approval queue / audit trail is
+ * is populated only by governed registration; an empty approval queue / audit trail is
  * reported as such rather than filled with placeholder rows.
  */
 

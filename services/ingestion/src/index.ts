@@ -43,7 +43,7 @@ async function main(): Promise<void> {
   const handles: LiveIngestionHandle[] = [];
   for (const exchange of env.ingestExchanges) {
     try {
-      const connector = resolveConnector(exchange, { demoSeed: env.demoSeed });
+      const connector = resolveConnector(exchange);
       const handle = await runLiveIngestion(
         connector,
         {

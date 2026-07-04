@@ -1,8 +1,11 @@
 /**
- * Demo Mode connector — deterministic synthetic data, zero network.
+ * Synthetic fixture connector — CI/TEST ONLY. Deterministic data, zero network.
  *
  * Implements the full ExchangeConnector contract from a seeded PRNG so the
- * entire platform (DQ gateway included) runs offline and reproducibly.
+ * offline CI seal (seal-phase9-runtime.ts) can exercise the ingestion pipeline
+ * reproducibly against a DISPOSABLE database. It is NOT registered in the
+ * runtime connector registry (src/connectors/index.ts) and cannot be selected
+ * via INGEST_EXCHANGE — the production daemon connects only to real venues.
  *
  * DETERMINISM CONTRACT
  * --------------------
@@ -37,7 +40,7 @@ import {
   boxMuller,
   hash32,
   mulberry32,
-} from "./demo-math.js";
+} from "./synthetic-math.js";
 import type {
   CandleBackfillRequest,
   ConnectorCapabilities,
@@ -53,11 +56,18 @@ import type {
   NormalizedOpenInterest,
   NormalizedOptionChain,
   NormalizedOptionContract,
-} from "./types.js";
+} from "../connectors/types.js";
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
-const EXCHANGE: Exchange = "DEMO";
+/**
+ * Venue label stamped on every emitted/persisted row. Defaults to the legacy
+ * synthetic "DEMO" label (excluded by every production mark/pipeline filter);
+ * the offline CI seal overrides it so fixture rows are admissible in its
+ * DISPOSABLE database. Module-scoped: one label per process (CI builds one
+ * connector at a time — this is a test fixture, not runtime code).
+ */
+let EXCHANGE: Exchange = "DEMO";
 const DEFAULT_SEED = 42;
 
 /** Bar 0 of every series opens here. No data exists before the epoch. */
@@ -564,13 +574,17 @@ const CAPABILITIES: ConnectorCapabilities = {
 };
 
 /**
- * Create a Demo connector. Same seed ⇒ byte-identical data forever; the
- * default seed (42) matches .env.example DEMO_SEED.
+ * Create the synthetic fixture connector (CI/test only). Same seed ⇒
+ * byte-identical data forever.
  */
-export function createDemoConnector(seed: number = DEFAULT_SEED): ExchangeConnector {
+export function createSyntheticFixtureConnector(
+  seed: number = DEFAULT_SEED,
+  venueLabel: Exchange = "DEMO",
+): ExchangeConnector {
   if (!Number.isFinite(seed) || !Number.isInteger(seed)) {
-    throw new Error(`demo: seed must be an integer (got ${String(seed)})`);
+    throw new Error(`synthetic fixture: seed must be an integer (got ${String(seed)})`);
   }
+  EXCHANGE = venueLabel;
 
   return {
     exchange: EXCHANGE,
@@ -857,4 +871,4 @@ export function createDemoConnector(seed: number = DEFAULT_SEED): ExchangeConnec
   };
 }
 
-export default createDemoConnector;
+export default createSyntheticFixtureConnector;

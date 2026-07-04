@@ -3,7 +3,7 @@
  *
  * Pure types only — NO runtime imports (keeps Prisma out of the browser bundle).
  * Sourced from real tables: Strategy, StrategyVersion, ApprovalRequest, AuditLog.
- * The strategy registry is laid down by the demo signal chain; the approval queue
+ * The strategy registry is populated only by governed registration; the approval queue
  * and audit trail stay empty until governance actions occur (explicit empty state).
  */
 

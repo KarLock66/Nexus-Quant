@@ -21,6 +21,7 @@ from app.features import (
     FEATURE_SET_NAME,
     FEATURE_SET_VERSION,
     FeatureComputationError,
+    canonicalize_ts,
     compute_core_technical,
 )
 from app.schemas.features import FeatureComputeRequest, FeatureComputeResponse
@@ -80,9 +81,13 @@ def compute(req: FeatureComputeRequest) -> FeatureComputeResponse:
         )
 
     try:
+        # ts is threaded through so the LAST candle's timestamp (the
+        # deterministic tick as-of, never the system clock) binds into the
+        # featureHash provenance envelope.
         features, feature_hash = compute_core_technical(
             [
                 {
+                    "ts": canonicalize_ts(c.ts),
                     "open": c.open,
                     "high": c.high,
                     "low": c.low,

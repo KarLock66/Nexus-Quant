@@ -4,7 +4,7 @@ import { prisma } from "@nexus/db";
  * Strategy Governance actions — the PRODUCTION register → approve → activate
  * path (Final production completion). Closes the "no production
  * strategy-registration path" blocker: StrategyVersion rows are no longer
- * creatable only by the demo chain / e2e CLI — an operator registers a DRAFT
+ * creatable only by this governed path — an operator registers a DRAFT
  * version (mandatory governance fields, fail-closed validation), a SECOND
  * operator approves the deployment (four-eyes), and activation is what the
  * workers' `resolvePersistedLineage` (newest ACTIVE version) picks up.

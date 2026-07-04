@@ -2,6 +2,47 @@
 
 ## Current Task
 
+**Phase 11B — Production data integrity lock (zero-synthetic runtime).** COMPLETE
+(2026-07-04). One cohesive change across backend / pipeline / API / frontend / CI:
+
+- **A. Demo elimination:** DEMO_MODE and every synthetic injection path REMOVED
+  from the runtime (demo signal chain, demo seed, demo-ingest CLI, demo quote
+  provider + the `MarketExecutionAdapter` silent default, demo connector out of
+  the registry, DEMO-venue admission opt-ins). CI/test fixtures now live in
+  `services/workers/src/ci/fixtures.ts` + `services/ingestion/src/ci/` — never
+  importable from a production boot path. `start:prod` fails if a legacy
+  DEMO_MODE/DEMO_SEED flag is even present in the env.
+- **B. Pipeline determinism lock:** `runSignalPipelineTick` THROWS
+  `PipelineDataError` on missing lineage/snapshots (no fallback), iterates in
+  total (ts,id)+symbol order, and fingerprints its exact input (`inputHash`,
+  sha256) every tick.
+- **C. featureHash envelope v2 (quant):** hash = sha256(canonical JSON of
+  {as_of_ts (last-candle ts), feature_set, version, logic_hash, features}) —
+  binds normalized data + versioned pipeline logic (`FEATURE_PIPELINE_LOGIC_HASH`
+  over the pinned-numerics descriptor) + the deterministic tick timestamp; no
+  env/clock/parallelism dependence. Goldens regenerated; 10-run regression +
+  env/clock-immunity + ts-canonicalization tests added (quant 35 green).
+- **D. API contract:** every `/api/v1/signals/*` JSON route returns
+  {status, data|null, error|null, meta{source, timestamp, featureHash}} via
+  `apps/web/src/lib/api-envelope.ts`; nextCursor moved to meta; no partial
+  success, no silent empties. SSE stream keeps explicit `stream-error` frames.
+- **E/F. Frontend + health truth:** demo-seed instructions and DEMO_MODE
+  branches removed (market-price venue filter now unconditional); system
+  monitoring never injects a synthetic connector row; /ops/health remains pure
+  infra probes (DB/Redis/quant/ingestion/workers).
+- **G. Golden snapshot gate:** `ci:golden` (also PHASE G inside `ci:harness`):
+  10× reset→tick→snapshot must be byte-identical (counters, rows, provenance,
+  inputHash). Verified live against a disposable TimescaleDB: 10/10 identical.
+
+Verification: repo typecheck green; all package builds green (db `prisma
+generate` skipped locally only because the running dev stack holds the engine
+DLL; its tsc half verified); 852 TS tests + 35 quant tests green; full
+`ci:harness` (phases 1,2,4,G,6,7,8 + HTTP 5,3) run against a disposable DB.
+
+---
+
+## (History) FINAL PRODUCTION COMPLETION
+
 **FINAL PRODUCTION COMPLETION — four remaining blockers eliminated.** COMPLETE +
 E2E-VERIFIED on live infra (2026-07-04), UNCOMMITTED on branch
 `remediation/step8-featurehash-reproducibility`. Full report:

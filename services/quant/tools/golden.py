@@ -26,8 +26,10 @@ import pathlib
 import sys
 
 from app.features import (
+    FEATURE_PIPELINE_LOGIC_HASH,
     FEATURE_SET_NAME,
     FEATURE_SET_VERSION,
+    canonicalize_ts,
     compute_core_technical,
     compute_feature_hash,
 )
@@ -41,21 +43,25 @@ def _load_candles(input_id: str) -> list[dict[str, str]]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _compute(input_id: str) -> tuple[dict[str, float], str]:
+def _compute(input_id: str) -> tuple[dict[str, float], str, str]:
     candles = _load_candles(input_id)
+    as_of_ts = canonicalize_ts(candles[-1]["ts"])
     features, feature_hash = compute_core_technical(candles)
-    # MIR-2: featureHash must equal sha256(canonical(returned vector)).
-    if compute_feature_hash(features) != feature_hash:
-        print("FATAL: MIR-2 violated (hash != sha256(vector))", file=sys.stderr)
+    # MIR-2 (envelope v2): featureHash must equal the canonical envelope hash
+    # over (returned vector, as-of ts, versioned logic hash).
+    if compute_feature_hash(features, as_of_ts) != feature_hash:
+        print("FATAL: MIR-2 violated (hash != canonical envelope hash)", file=sys.stderr)
         sys.exit(2)
-    return features, feature_hash
+    return features, feature_hash, as_of_ts
 
 
-def _record(input_id: str, features: dict[str, float], feature_hash: str) -> str:
+def _record(input_id: str, features: dict[str, float], feature_hash: str, as_of_ts: str) -> str:
     record = {
         "feature_set": FEATURE_SET_NAME,
         "version": FEATURE_SET_VERSION,
         "input_id": input_id,
+        "as_of_ts": as_of_ts,
+        "logic_hash": FEATURE_PIPELINE_LOGIC_HASH,
         "features": features,
         "featureHash": feature_hash,
     }
@@ -63,8 +69,8 @@ def _record(input_id: str, features: dict[str, float], feature_hash: str) -> str
 
 
 def _selftest(input_id: str) -> int:
-    f1, h1 = _compute(input_id)
-    f2, h2 = _compute(input_id)
+    f1, h1, _ = _compute(input_id)
+    f2, h2, _ = _compute(input_id)
     if h1 != h2 or f1 != f2:
         print(f"NON-DETERMINISTIC in-process: {h1} != {h2}", file=sys.stderr)
         return 1
@@ -73,14 +79,14 @@ def _selftest(input_id: str) -> int:
 
 
 def _emit(input_id: str) -> int:
-    _, feature_hash = _compute(input_id)
+    _, feature_hash, _ = _compute(input_id)
     print(feature_hash)
     return 0
 
 
 def _generate(input_id: str) -> int:
-    features, feature_hash = _compute(input_id)
-    sys.stdout.write(_record(input_id, features, feature_hash))
+    features, feature_hash, as_of_ts = _compute(input_id)
+    sys.stdout.write(_record(input_id, features, feature_hash, as_of_ts))
     return 0
 
 
@@ -94,7 +100,7 @@ def _check(input_id: str, strict: bool) -> int:
         )
         return 1
     baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
-    features, feature_hash = _compute(input_id)
+    features, feature_hash, _ = _compute(input_id)
     if baseline.get("featureHash") != feature_hash:
         print(
             f"GOLDEN HASH DRIFT: baseline={baseline.get('featureHash')} "

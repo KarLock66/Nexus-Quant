@@ -11,14 +11,15 @@
  *
  * FIXTURE OWNERSHIP (F1 fix): the SSE test needs >= 3 signals to exercise a
  * mid-stream reconnect cutoff. It no longer borrows whatever rows earlier phases
- * happened to leave behind (Phase 1 leaves exactly 2 demo rows; Phase 5 deletes
+ * happened to leave behind (Phase 1 leaves exactly 2 fixture rows; Phase 5 deletes
  * its own fixtures before this phase runs — so the composed harness previously
  * had only 2 rows here and failed "need >= 3 signals"). This phase now SEEDS its
  * own deterministic frozen block under a dedicated symbol and removes it in a
  * finally block, so it owns its setup/teardown and is order-independent.
  */
 
-import { ensureSignalDemoChain, Prisma, prisma } from "@nexus/db";
+import { Prisma, prisma } from "@nexus/db";
+import { ensureCiFixtureLineage } from "./fixtures.js";
 import {
   assert,
   collectSse,
@@ -43,7 +44,7 @@ interface SignalDTO {
  * the (createdAt, id) total order is unambiguous. Idempotent via upsert.
  */
 async function seedSseRows(featureSetId: string, strategyVersionId: string): Promise<void> {
-  const dqReportId = "demo-dq-btc-perp-h1"; // exists after ensureSignalDemoChain
+  const dqReportId = "ci-dq-btc-perp-h1"; // exists after ensureCiFixtureLineage
   const baseTs = Date.parse("2026-06-15T00:00:00.000Z");
   const baseCreated = Date.parse("2026-06-16T00:00:00.000Z");
 
@@ -99,7 +100,7 @@ async function cleanupSseRows(): Promise<void> {
 
 export async function runPhase3(baseUrl: string): Promise<void> {
   log("info", "PHASE 3 — SSE stream consistency", { seeded: SSE_SEED });
-  const chain = await ensureSignalDemoChain(prisma);
+  const chain = await ensureCiFixtureLineage(prisma);
   await seedSseRows(chain.featureSetId, chain.strategyVersion.id);
   try {
     await runPhase3Body(baseUrl);

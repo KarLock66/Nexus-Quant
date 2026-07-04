@@ -12,6 +12,7 @@
     "test": "vitest run",
     "e2e:pipeline": "tsx src/cli/e2e-pipeline.ts",
     "ci:harness": "tsx src/ci/run-all.ts",
+    "ci:golden": "tsx src/ci/run-golden.ts",
     "seal:phase97": "tsx src/ci/seal-phase97-control.ts"
   },
   "dependencies": {

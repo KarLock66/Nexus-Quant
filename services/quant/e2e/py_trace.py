@@ -20,7 +20,7 @@ from pathlib import Path
 import httpx
 
 from app.dq import run_statistical_checks
-from app.features import compute_core_technical
+from app.features import canonicalize_ts, compute_core_technical
 from app.schemas.dq import StatisticalRequest
 from app.schemas.features import FeatureComputeRequest
 
@@ -105,7 +105,7 @@ with httpx.Client(base_url=BASE, timeout=30.0) as client:
     }
     feats, fhash = compute_core_technical(
         [
-            {"open": c.open, "high": c.high, "low": c.low, "close": c.close, "volume": c.volume}
+            {"ts": canonicalize_ts(c.ts), "open": c.open, "high": c.high, "low": c.low, "close": c.close, "volume": c.volume}
             for c in fmodel.market_data.candles
         ]
     )

@@ -16,15 +16,12 @@ import type { LiquidityObservation, PriceObservation } from "@nexus/trading-deci
 const DEFAULT_MAX_AGE_MS = 60_000;
 
 /**
- * DEMO-venue rows are synthetic (seeded-PRNG connector / fixtures). They are
- * EXCLUDED from the mark unless the deployment explicitly opts into demo mode
- * (the platform-wide DEMO_MODE flag): a fresh synthetic candle must never become
- * the price a real trading decision is sized against. Fail-closed default.
+ * Legacy DEMO-venue rows are synthetic fixtures written by old builds. They are
+ * EXCLUDED from every mark query UNCONDITIONALLY (no env branch exists): a
+ * synthetic candle must never become the price a real trading decision is
+ * sized against. Defense-in-depth — nothing writes DEMO rows anymore.
  */
-const DEMO_VENUE_ALLOWED = ["true", "1", "yes"].includes(
-  (process.env.DEMO_MODE ?? "").trim().toLowerCase(),
-);
-const VENUE_FILTER = DEMO_VENUE_ALLOWED ? {} : ({ exchange: { not: "DEMO" } } as const);
+const VENUE_FILTER = { exchange: { not: "DEMO" } } as const;
 
 export interface MarketView {
   price: PriceObservation | null;

@@ -55,9 +55,6 @@ services:
       DATABASE_URL: postgresql://nexus:nexus_dev_password@postgres:5432/nexus_quant
       REDIS_URL: redis://redis:6379
       QUANT_SERVICE_URL: http://quant:8000
-      # Local demo stack: explicit opt-in to the synthetic DEMO lineage (marks,
-      # demo bootstrap). Production deployments must NOT set this.
-      DEMO_MODE: "true"
     ports:
       - "3000:3000"
     depends_on:
@@ -77,9 +74,10 @@ services:
     environment:
       DATABASE_URL: postgresql://nexus:nexus_dev_password@postgres:5432/nexus_quant
       REDIS_URL: redis://redis:6379
-      # The DEMO venue (the default when INGEST_EXCHANGE is unset) is fail-closed
-      # behind this explicit opt-in — the daemon refuses to start without it.
-      DEMO_MODE: "true"
+      QUANT_SERVICE_URL: http://quant:8000
+      # Real venue over public endpoints (no API keys needed). There is no
+      # synthetic venue — the local stack ingests real market data too.
+      INGEST_EXCHANGE: DERIBIT
     depends_on:
       postgres:
         condition: service_healthy
@@ -96,8 +94,6 @@ services:
       DATABASE_URL: postgresql://nexus:nexus_dev_password@postgres:5432/nexus_quant
       REDIS_URL: redis://redis:6379
       QUANT_SERVICE_URL: http://quant:8000
-      # Demo bootstrap chain is opt-in (default-off in production workers).
-      DEMO_MODE: "true"
     depends_on:
       postgres:
         condition: service_healthy

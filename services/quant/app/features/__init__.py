@@ -7,23 +7,27 @@ Flow, Regime, Risk) land with their data dependencies in later phases.
 """
 
 from app.features.core_technical import (
+    FEATURE_PIPELINE_LOGIC_HASH,
     FEATURE_SET_NAME,
     FEATURE_SET_VERSION,
     MIN_CANDLES,
     FeatureComputationError,
     InsufficientDataError,
     InvalidMarketDataError,
+    canonicalize_ts,
     compute_core_technical,
     compute_feature_hash,
 )
 
 __all__ = [
+    "FEATURE_PIPELINE_LOGIC_HASH",
     "FEATURE_SET_NAME",
     "FEATURE_SET_VERSION",
     "MIN_CANDLES",
     "FeatureComputationError",
     "InsufficientDataError",
     "InvalidMarketDataError",
+    "canonicalize_ts",
     "compute_core_technical",
     "compute_feature_hash",
 ]

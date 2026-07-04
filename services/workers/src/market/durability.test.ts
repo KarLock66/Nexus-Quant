@@ -41,7 +41,7 @@ import {
   recoverMarketState,
 } from "./recovery.js";
 import { SimulatedBroker } from "./broker.js";
-import { demoMarketDataProvider } from "./market-data.js";
+import { fixtureQuoteProvider } from "../ci/fixtures.js";
 import { createMarketExecutionAdapter } from "./stage.js";
 
 // ── Fixtures (mirror the Phase 6 stage-integration fixtures) ───────────────────
@@ -89,7 +89,7 @@ const decisions = [
 
 /** Drive the REAL Phase 5 stage with a durable adapter; return live state + store. */
 async function driveDurable(store: MarketEventStore) {
-  const adapter = createMarketExecutionAdapter({ eventStore: store });
+  const adapter = createMarketExecutionAdapter({ eventStore: store, marketData: fixtureQuoteProvider() });
   const deps = createExecutionStage({ adapter });
   const result = await runExecutionStage(decisions, deps, ctx);
   return { adapter, portfolioState: result.portfolioState };
@@ -135,7 +135,7 @@ describe("MarketEventStore — append-only, contiguous, in commit order", () => 
     const store = new InMemoryMarketEventStore();
     // The real broker throws -> fail-closed REJECTED -> no commit -> no journal record.
     const { RealBroker } = await import("./broker.js");
-    const adapter = createMarketExecutionAdapter({ broker: RealBroker, eventStore: store });
+    const adapter = createMarketExecutionAdapter({ broker: RealBroker, eventStore: store, marketData: fixtureQuoteProvider() });
     const deps = createExecutionStage({ adapter });
     const r = await runExecutionStage([decisionEvent("BTC-PERP", "LONG", "0.5")], deps, ctx);
     expect(r.rejected).toBe(1);
@@ -165,6 +165,7 @@ describe("recoverMarketState — rebuilds Position/Account/Portfolio from the jo
     // Fresh adapter as if after a restart, seeded from the reconstructed history.
     const restarted = createMarketExecutionAdapter({
       eventStore: store,
+      marketData: fixtureQuoteProvider(),
       initialMarketState: recovered.marketState,
       initialPortfolioMirror: recovered.portfolioState,
     });
@@ -179,7 +180,7 @@ describe("recoverMarketState — rebuilds Position/Account/Portfolio from the jo
     const store = new InMemoryMarketEventStore();
     const adapter = createMarketExecutionAdapter({
       broker: SimulatedBroker,
-      marketData: demoMarketDataProvider(),
+      marketData: fixtureQuoteProvider(),
       eventStore: store,
     });
     const deps = createExecutionStage({ adapter });
@@ -220,7 +221,7 @@ describe("recoverMarketState — FAIL-CLOSED on tamper / divergence", () => {
     const store = new InMemoryMarketEventStore();
     const adapter = createMarketExecutionAdapter({
       broker: SimulatedBroker, // realizes slippage -> account moves, so the snapshot bites
-      marketData: demoMarketDataProvider(),
+      marketData: fixtureQuoteProvider(),
       eventStore: store,
     });
     const deps = createExecutionStage({ adapter });
@@ -244,7 +245,7 @@ describe("durable hook — journal-then-commit is fail-closed", () => {
       },
       readAll: async () => [],
     };
-    const adapter = createMarketExecutionAdapter({ eventStore: failing });
+    const adapter = createMarketExecutionAdapter({ eventStore: failing, marketData: fixtureQuoteProvider() });
     const deps = createExecutionStage({ adapter });
     const r = await runExecutionStage([decisionEvent("BTC-PERP", "LONG", "0.5")], deps, ctx);
     expect(r.filled).toBe(0);

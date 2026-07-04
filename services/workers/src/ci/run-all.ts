@@ -10,6 +10,7 @@
  *   PHASE 1  pipeline execution  — >=50 concurrent ticks, no duplicate writes
  *   PHASE 2  restart / crash     — SIGKILL the worker, restart, idempotency holds
  *   PHASE 4  replay determinism  — identical inputs -> identical outputs
+ *   PHASE G  golden snapshot     — 10x reset->tick->snapshot, byte-identical (11B)
  *   PHASE 6  market integration  — order lifecycle, position/account, reconciliation
  *   PHASE 7  durability          — append-only journal, restart rebuild, fail-closed
  *   PHASE 8  risk & capital       — pre-trade gate, kill switch persist + recover
@@ -39,6 +40,7 @@ import { runPhase5 } from "./phase5-pagination.js";
 import { runPhase6 } from "./phase6-market.js";
 import { runPhase7 } from "./phase7-durability.js";
 import { runPhase8 } from "./phase8-risk.js";
+import { runGoldenSnapshot } from "./golden-snapshot.js";
 
 const WEB_PORT = Number(process.env["HARNESS_WEB_PORT"] ?? "3000");
 const BASE_URL = `http://127.0.0.1:${WEB_PORT}`;
@@ -51,6 +53,7 @@ async function main(): Promise<void> {
   await runPhase1();
   await runPhase2();
   await runPhase4();
+  await runGoldenSnapshot(); // PHASE G — 10x reset->tick->snapshot, byte-identical
   await runPhase6();
   await runPhase7();
   await runPhase8();

@@ -1,10 +1,11 @@
-import { NextResponse } from "next/server";
 import { getReadiness } from "@/lib/trade-plan";
+import { signalError, signalOk } from "@/lib/api-envelope";
 
 /**
  * GET /api/v1/signals/readiness — the deterministic 0..100 readiness score + action verdict
  * per active symbol (Phase 10C-1), a lightweight subset of the trade-plan payload. Optional
- * ?symbol=BTC-PERP,ETH-PERP filter. ApiEnvelope only.
+ * ?symbol=BTC-PERP,ETH-PERP filter. Phase 11B signal envelope; readiness rows carry no
+ * per-row featureHash, so meta.featureHash is the honest "unavailable" sentinel.
  */
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -16,11 +17,8 @@ export async function GET(request: Request) {
       ? raw.split(",").map((s) => s.trim()).filter((s) => s.length > 0)
       : undefined;
     const data = await getReadiness(symbols);
-    return NextResponse.json({ data, generatedAt: new Date().toISOString() });
+    return signalOk(data, { source: "db" });
   } catch (err) {
-    return NextResponse.json(
-      { error: "failed to load readiness", detail: String(err) },
-      { status: 500 },
-    );
+    return signalError(500, `failed to load readiness: ${String(err)}`);
   }
 }

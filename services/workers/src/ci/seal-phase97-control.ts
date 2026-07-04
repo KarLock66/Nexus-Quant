@@ -26,7 +26,8 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ensureSignalDemoChain, prisma } from "@nexus/db";
+import { prisma } from "@nexus/db";
+import { ensureCiFixtureLineage, fixtureQuoteProvider } from "./fixtures.js";
 import {
   evaluateTradingPermission,
   FRESHNESS_BANDS,
@@ -48,7 +49,7 @@ import {
 } from "../execution/index.js";
 import { emptyPortfolioState } from "../execution/portfolio.js";
 import { runSignalPipelineTick } from "../pipeline/orchestrator.js";
-import { createMarketExecutionAdapter, demoMarketDataProvider } from "../market/index.js";
+import { createMarketExecutionAdapter } from "../market/index.js";
 import {
   DEFAULT_RISK_LIMITS,
   FileRiskEventStore,
@@ -115,7 +116,7 @@ function compose(control: RiskGateHook, risk: RiskGateHook): RiskGateHook {
 async function runTick(tag: string, controlHook: RiskGateHook | null) {
   const store = new FileRiskEventStore(join(dir, `risk-${tag}.jsonl`));
   const engine = new RiskEngine({ store, limits: DEFAULT_RISK_LIMITS });
-  const adapter = createMarketExecutionAdapter({ marketData: demoMarketDataProvider() });
+  const adapter = createMarketExecutionAdapter({ marketData: fixtureQuoteProvider() });
   const risk = gateFor(engine, adapter);
   const gate = controlHook ? compose(controlHook, risk) : risk;
   const deps = createExecutionStage({ adapter, riskGate: gate });
@@ -163,7 +164,7 @@ async function main(): Promise<void> {
 
   try {
     await assertDbReachable();
-    await ensureSignalDemoChain(prisma);
+    await ensureCiFixtureLineage(prisma);
     await clearControlTables();
 
     // ── STEP A — BOOTSTRAP (real worker, real probes, BOOTING→STARTING→HEALTHY) ──
