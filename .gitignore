@@ -6,10 +6,14 @@ node_modules/
 __pycache__/
 *.pyc
 .venv/
+.venv*/
 venv/
 .pytest_cache/
 .ruff_cache/
 *.egg-info/
+
+# pip-tools CI drift-check artifact (regenerated in-container, never committed)
+requirements.regen.lock
 
 # builds
 .next/
