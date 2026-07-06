@@ -29,7 +29,12 @@ import type { DecisionsView } from "./trading-decision-types";
  */
 
 /** Assumed display equity (the web tier has no live account — see sizing provenance). */
-const ASSUMED_EQUITY = Number(process.env.TRADING_DECISION_EQUITY_USD ?? 100_000);
+// Guard the env parse the same way riskFraction is guarded in buildRiskContext:
+// an empty ("" -> 0) or non-numeric ("100k" -> NaN) override must fall back to the
+// documented default, never feed 0/NaN equity into the sizing/notional math.
+const parsedEquity = Number(process.env.TRADING_DECISION_EQUITY_USD);
+const ASSUMED_EQUITY =
+  Number.isFinite(parsedEquity) && parsedEquity > 0 ? parsedEquity : 100_000;
 const DEFAULT_LEVERAGE = 3;
 const DEFAULT_RISK_FRACTION = 0.01;
 /** How many recent EngineSignals to scan when selecting the latest per symbol. */
@@ -106,7 +111,17 @@ async function assemble(symbolsFilter?: string[]): Promise<{
   const items: AssembledItem[] = [];
   const symbolsMissingPrice: string[] = [];
 
-  for (const row of latest.values()) {
+  // Market views are independent per symbol; fetch them in one concurrent batch
+  // (bounded by the connection pool) instead of a serialized round-trip per
+  // symbol. Determinism is preserved — results are zipped back by index and the
+  // rest of the assembly stays sequential and pure (mirrors getConsensus below).
+  const latestRows = [...latest.values()];
+  const marketViews = await Promise.all(
+    latestRows.map((row) => getMarketView(row.symbol, now)),
+  );
+
+  for (let idx = 0; idx < latestRows.length; idx++) {
+    const row = latestRows[idx]!;
     const fs = row.featureSnapshot;
     const params: SignalParams = resolveSignalParams(
       row.strategyParams as Record<string, unknown> | null,
@@ -124,7 +139,7 @@ async function assemble(symbolsFilter?: string[]): Promise<{
       createdAt: row.createdAt.toISOString(),
     };
 
-    const market = await getMarketView(row.symbol, now);
+    const market = marketViews[idx]!;
     if (market.price === null) symbolsMissingPrice.push(row.symbol);
 
     const decision = buildTradingDecision({
