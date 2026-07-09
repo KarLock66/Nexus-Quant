@@ -15,6 +15,11 @@ from fastapi import FastAPI
 from app import __version__
 from app.api.dq import router as dq_router
 from app.api.features import router as features_router
+from app.security import require_secret_configured
+
+# Fail-closed: a deployment that marks the shared secret REQUIRED
+# (QUANT_REQUIRE_SECRET) must provide it, or the process refuses to boot.
+require_secret_configured()
 
 app = FastAPI(
     title="Nexus Quant Service",

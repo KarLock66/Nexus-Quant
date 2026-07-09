@@ -12,6 +12,7 @@
  */
 
 import { Prisma, prisma } from "@nexus/db";
+import { assertDestructiveDbAllowed } from "./destructive-guard.js";
 import { ensureCiFixtureLineage } from "./fixtures.js";
 import { assert, getJson, idsEqual, log } from "./lib.js";
 
@@ -127,6 +128,7 @@ function assertOrdered(list: SignalDTO[]): void {
  * signals and every production read model would serve them as real otherwise.
  */
 async function cleanupPaginationRows(): Promise<void> {
+  assertDestructiveDbAllowed();
   await prisma.engineSignal.deleteMany({ where: { symbol: PAGE_SYMBOL } });
   await prisma.featureSnapshot.deleteMany({ where: { symbol: PAGE_SYMBOL } });
 }

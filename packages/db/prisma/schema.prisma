@@ -869,6 +869,12 @@ model StrategyVersion {
   backtests          Backtest[]
   calibrationReports CalibrationReport[]
 
+  // DB-enforced single-ACTIVE invariant (not expressible in Prisma schema):
+  // partial unique index "StrategyVersion_strategyId_active_key" ON (strategyId)
+  // WHERE status = 'ACTIVE' — created by raw SQL in migration
+  // 20260708000000_single_active_strategy_version. `prisma migrate deploy` is
+  // unaffected; if `prisma migrate dev` ever generates a DROP for this index,
+  // that drop must be removed before applying.
   @@unique([strategyId, version])
 }
 

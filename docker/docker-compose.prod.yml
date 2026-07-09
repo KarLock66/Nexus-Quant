@@ -10,8 +10,9 @@
 #   docker compose -f docker/docker-compose.prod.yml up -d --build
 #
 # Required environment (fail-closed — compose refuses to start without them):
-#   POSTGRES_PASSWORD   production DB password
-#   OPS_CONTROL_TOKEN   operator bearer token for mutating control/governance APIs
+#   POSTGRES_PASSWORD            production DB password
+#   OPS_CONTROL_TOKEN            operator bearer token for mutating control/governance APIs
+#   QUANT_SERVICE_SHARED_SECRET  internal auth for the quant API (QUANT_REQUIRE_SECRET is armed)
 # Live order routing additionally requires (see .env.example):
 #   MARKET_BROKER=real DERIBIT_CLIENT_ID=... DERIBIT_CLIENT_SECRET=... DERIBIT_ENV=live|test
 # Without them the default is paper execution against REAL Deribit market data.
@@ -56,7 +57,10 @@ services:
       dockerfile: docker/quant.Dockerfile
     restart: unless-stopped
     environment:
-      QUANT_SERVICE_SHARED_SECRET: ${QUANT_SERVICE_SHARED_SECRET:-}
+      QUANT_SERVICE_SHARED_SECRET: ${QUANT_SERVICE_SHARED_SECRET:?QUANT_SERVICE_SHARED_SECRET is required in production}
+      # Startup gate: with this armed the service refuses to boot when the
+      # secret above is unset, so the auth guard can never degrade to a no-op.
+      QUANT_REQUIRE_SECRET: "1"
     # Internal network only (workers/ingestion reach it as http://quant:8000).
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
@@ -95,7 +99,7 @@ services:
       DATABASE_URL: postgresql://nexus:${POSTGRES_PASSWORD:?}@postgres:5432/nexus_quant
       REDIS_URL: redis://redis:6379
       QUANT_SERVICE_URL: http://quant:8000
-      QUANT_SERVICE_SHARED_SECRET: ${QUANT_SERVICE_SHARED_SECRET:-}
+      QUANT_SERVICE_SHARED_SECRET: ${QUANT_SERVICE_SHARED_SECRET:?}
       # REAL venue market data (public endpoints; the synthetic DEMO venue no longer exists).
       INGEST_EXCHANGE: ${INGEST_EXCHANGE:-DERIBIT}
       INGEST_SYMBOLS: ${INGEST_SYMBOLS:-BTC-PERP,ETH-PERP}
@@ -120,7 +124,7 @@ services:
       DATABASE_URL: postgresql://nexus:${POSTGRES_PASSWORD:?}@postgres:5432/nexus_quant
       REDIS_URL: redis://redis:6379
       QUANT_SERVICE_URL: http://quant:8000
-      QUANT_SERVICE_SHARED_SECRET: ${QUANT_SERVICE_SHARED_SECRET:-}
+      QUANT_SERVICE_SHARED_SECRET: ${QUANT_SERVICE_SHARED_SECRET:?}
       # Execution: real Deribit marks; broker defaults to paper — flipping to
       # `real` requires the Deribit credentials below (fail-closed otherwise:
       # execution stays unarmed, signals still flow).

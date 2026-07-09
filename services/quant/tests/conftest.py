@@ -21,8 +21,9 @@ START = datetime(2024, 1, 1, tzinfo=timezone.utc)
 
 @pytest.fixture(autouse=True)
 def _no_shared_secret(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Default: auth guard is a no-op; auth tests set the env var explicitly.
+    # Default: auth guard is a no-op; auth tests set the env vars explicitly.
     monkeypatch.delenv("QUANT_SERVICE_SHARED_SECRET", raising=False)
+    monkeypatch.delenv("QUANT_REQUIRE_SECRET", raising=False)
 
 
 @pytest.fixture()

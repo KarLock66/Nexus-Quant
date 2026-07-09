@@ -1,17 +1,15 @@
 import { createHash, timingSafeEqual } from "node:crypto";
+import { parseOperatorRegistry } from "./operator-registry";
 
 /**
  * Operator identity registry (B2) — resolves a presented operator token to a
  * SPECIFIC operator identity, so four-eyes and audit `actor` can be bound to an
  * authenticated principal instead of a self-declared client string.
  *
- * Configuration (server-only env), first match wins:
- *  - `OPERATORS` as a JSON array: `[{"id":"alice","token":"…"},{"id":"bob","token":"…"}]`
- *  - `OPERATORS` as a compact list: `alice:tok1,bob:tok2`
- *  - legacy fallback: a bare `OPS_CONTROL_TOKEN` becomes the single operator
- *    identity `"operator"` (existing single-token deployments keep working — with
- *    exactly ONE identity, which is why four-eyes correctly stays unsatisfiable
- *    until a second operator is configured).
+ * Registry PARSING (env formats, legacy OPS_CONTROL_TOKEN fallback, fail-closed
+ * rules) lives in lib/operator-registry.ts — the Edge-safe single source of
+ * truth. This module adds the Node-only half: hashing the configured tokens and
+ * matching a presented token in constant time.
  *
  * Node-runtime only (uses `node:crypto`): consumed by the auth/login and the
  * mutating route handlers (all `runtime = "nodejs"`), never by the Edge
@@ -31,49 +29,14 @@ function sha256(value: string): Buffer {
   return createHash("sha256").update(value, "utf8").digest();
 }
 
-/** Parse the registry from env on each call (env is process-static; no cache). */
+/** Hash the parsed registry's tokens for constant-time matching (no cache). */
 function loadRegistry(): Registered[] {
-  const raw = (process.env.OPERATORS ?? "").trim();
-  const out: Registered[] = [];
-
-  if (raw.startsWith("[")) {
-    try {
-      const arr: unknown = JSON.parse(raw);
-      if (Array.isArray(arr)) {
-        for (const e of arr) {
-          if (e !== null && typeof e === "object") {
-            const id = (e as Record<string, unknown>)["id"];
-            const token = (e as Record<string, unknown>)["token"];
-            if (typeof id === "string" && typeof token === "string") {
-              const tid = id.trim();
-              if (tid !== "" && token !== "") out.push({ id: tid, tokenHash: sha256(token) });
-            }
-          }
-        }
-      }
-    } catch {
-      // malformed OPERATORS JSON -> treat as no operators (fail-closed).
-    }
-  } else if (raw !== "") {
-    for (const pair of raw.split(",")) {
-      const idx = pair.indexOf(":");
-      if (idx <= 0) continue;
-      const id = pair.slice(0, idx).trim();
-      const token = pair.slice(idx + 1);
-      if (id !== "" && token !== "") out.push({ id, tokenHash: sha256(token) });
-    }
-  }
-
-  if (out.length === 0) {
-    const legacy = (process.env.OPS_CONTROL_TOKEN ?? "").trim();
-    if (legacy !== "") out.push({ id: "operator", tokenHash: sha256(legacy) });
-  }
-  return out;
+  return parseOperatorRegistry().map((e) => ({ id: e.id, tokenHash: sha256(e.token) }));
 }
 
 /** True iff at least one operator identity is configured (auth is usable). */
 export function operatorsConfigured(): boolean {
-  return loadRegistry().length > 0;
+  return parseOperatorRegistry().length > 0;
 }
 
 /**

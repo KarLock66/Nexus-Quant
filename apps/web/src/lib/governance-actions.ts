@@ -43,6 +43,29 @@ export class GovernanceConflictError extends Error {
   }
 }
 
+/**
+ * True when `err` is a Postgres unique-constraint violation for the single-ACTIVE
+ * partial index (`StrategyVersion_strategyId_active_key`), surfaced by Prisma as
+ * a P2002 known-request error. Two approvals that race to activate different
+ * versions of the same strategy both pass the application-level "pause others"
+ * check against a pre-commit snapshot; the database is the final arbiter and
+ * fails the loser here. We match on the P2002 code and, when Prisma reports it,
+ * the index name in `meta.target` — but the code alone is dispositive because the
+ * only unique constraint an activation UPDATE can touch is this one (it never
+ * changes `strategyId`/`version`, the other unique key).
+ */
+function isSingleActiveConflict(err: unknown): boolean {
+  if (typeof err !== "object" || err === null) return false;
+  const e = err as { code?: unknown; meta?: { target?: unknown } };
+  if (e.code !== "P2002") return false;
+  const target = e.meta?.target;
+  if (typeof target === "string") return target.includes("active");
+  if (Array.isArray(target)) return target.some((t) => String(t).includes("active"));
+  // Prisma does not always populate meta.target for raw partial indexes — the
+  // P2002 code during activation is conclusive on its own.
+  return true;
+}
+
 // ── Client seam (injected in tests; the real Prisma client in routes) ────────
 
 /** The minimal transactional surface these actions need (subset of PrismaClient). */
@@ -283,117 +306,133 @@ export async function reviewDeployApproval(
   const note =
     input.note === undefined || input.note === null ? null : requireText(input.note, "note");
 
-  return client.$transaction(async (tx) => {
-    const approval = await tx.approvalRequest.findUnique({ where: { id: input.approvalId } });
-    if (approval === null) {
-      throw new GovernanceConflictError(`approval request ${input.approvalId} does not exist`);
-    }
-    if (approval.status !== "PENDING") {
-      throw new GovernanceConflictError(
-        `approval request ${approval.id} is already ${approval.status} — reviews are immutable`,
-      );
-    }
-    if (approval.kind !== "DEPLOY_APPROVAL" || approval.entityType !== "StrategyVersion") {
-      throw new GovernanceConflictError(
-        `approval request ${approval.id} is ${approval.kind}/${approval.entityType}, not a strategy deploy approval`,
-      );
-    }
-    // Four-eyes: the reviewer must not be the requester.
-    if (approval.requestedBy === actor) {
-      throw new GovernanceConflictError(
-        "four-eyes violation: the requesting actor cannot review their own deployment",
-      );
-    }
+  try {
+    return await client.$transaction(async (tx) => {
+      const approval = await tx.approvalRequest.findUnique({ where: { id: input.approvalId } });
+      if (approval === null) {
+        throw new GovernanceConflictError(`approval request ${input.approvalId} does not exist`);
+      }
+      if (approval.status !== "PENDING") {
+        throw new GovernanceConflictError(
+          `approval request ${approval.id} is already ${approval.status} — reviews are immutable`,
+        );
+      }
+      if (approval.kind !== "DEPLOY_APPROVAL" || approval.entityType !== "StrategyVersion") {
+        throw new GovernanceConflictError(
+          `approval request ${approval.id} is ${approval.kind}/${approval.entityType}, not a strategy deploy approval`,
+        );
+      }
+      // Four-eyes: the reviewer must not be the requester.
+      if (approval.requestedBy === actor) {
+        throw new GovernanceConflictError(
+          "four-eyes violation: the requesting actor cannot review their own deployment",
+        );
+      }
 
-    const version = await tx.strategyVersion.findUnique({ where: { id: approval.entityId } });
-    if (version === null) {
-      throw new GovernanceConflictError(
-        `strategy version ${approval.entityId} referenced by the approval no longer exists`,
-      );
-    }
-    if (version.status !== "DRAFT" && version.status !== "PENDING_DEPLOY_APPROVAL") {
-      throw new GovernanceConflictError(
-        `strategy version ${version.id} is ${version.status} — only DRAFT/PENDING_DEPLOY_APPROVAL can be reviewed`,
-      );
-    }
+      const version = await tx.strategyVersion.findUnique({ where: { id: approval.entityId } });
+      if (version === null) {
+        throw new GovernanceConflictError(
+          `strategy version ${approval.entityId} referenced by the approval no longer exists`,
+        );
+      }
+      if (version.status !== "DRAFT" && version.status !== "PENDING_DEPLOY_APPROVAL") {
+        throw new GovernanceConflictError(
+          `strategy version ${version.id} is ${version.status} — only DRAFT/PENDING_DEPLOY_APPROVAL can be reviewed`,
+        );
+      }
 
-    const reviewedAt = new Date();
-    await tx.approvalRequest.update({
-      where: { id: approval.id },
-      data: {
-        status: action === "approve" ? "APPROVED" : "REJECTED",
-        reviewedBy: actor,
-        reviewedAt,
-        reviewNote: note,
-      },
-    });
-    await tx.auditLog.create({
-      data: {
-        actor,
-        action: action === "approve" ? "APPROVE" : "REJECT",
-        entityType: "ApprovalRequest",
-        entityId: approval.id,
-        before: { status: "PENDING" },
-        after: { status: action === "approve" ? "APPROVED" : "REJECTED" },
-        reason: note,
-        requestId: approval.id,
-      },
-    });
+      const reviewedAt = new Date();
+      await tx.approvalRequest.update({
+        where: { id: approval.id },
+        data: {
+          status: action === "approve" ? "APPROVED" : "REJECTED",
+          reviewedBy: actor,
+          reviewedAt,
+          reviewNote: note,
+        },
+      });
+      await tx.auditLog.create({
+        data: {
+          actor,
+          action: action === "approve" ? "APPROVE" : "REJECT",
+          entityType: "ApprovalRequest",
+          entityId: approval.id,
+          before: { status: "PENDING" },
+          after: { status: action === "approve" ? "APPROVED" : "REJECTED" },
+          reason: note,
+          requestId: approval.id,
+        },
+      });
 
-    if (action === "reject") {
-      // A rejected deployment leaves the version in DRAFT (it never activated).
-      return {
-        approvalRequestId: approval.id,
-        action,
-        versionId: version.id,
-        versionStatus: version.status,
-        pausedVersionIds: [],
-      };
-    }
+      if (action === "reject") {
+        // A rejected deployment leaves the version in DRAFT (it never activated).
+        return {
+          approvalRequestId: approval.id,
+          action,
+          versionId: version.id,
+          versionStatus: version.status,
+          pausedVersionIds: [],
+        };
+      }
 
-    // Single-active-per-strategy: pause every OTHER active version first, in the
-    // same transaction, each with its own audit row.
-    const otherActive = await tx.strategyVersion.findMany({
-      where: { strategyId: version.strategyId, status: "ACTIVE", id: { not: version.id } },
-    });
-    for (const other of otherActive) {
-      await tx.strategyVersion.update({ where: { id: other.id }, data: { status: "PAUSED" } });
+      // Single-active-per-strategy: pause every OTHER active version first, in the
+      // same transaction, each with its own audit row. The DB partial unique index
+      // (StrategyVersion_strategyId_active_key) is the final arbiter — if a
+      // concurrent approval activated another version against a snapshot this
+      // transaction never saw, the activation UPDATE below raises P2002 and the
+      // whole transaction (including this approval decision) rolls back.
+      const otherActive = await tx.strategyVersion.findMany({
+        where: { strategyId: version.strategyId, status: "ACTIVE", id: { not: version.id } },
+      });
+      for (const other of otherActive) {
+        await tx.strategyVersion.update({ where: { id: other.id }, data: { status: "PAUSED" } });
+        await tx.auditLog.create({
+          data: {
+            actor,
+            action: "UPDATE",
+            entityType: "StrategyVersion",
+            entityId: other.id,
+            before: { status: "ACTIVE" },
+            after: { status: "PAUSED" },
+            reason: `superseded by activation of version ${version.version} (approval ${approval.id})`,
+            requestId: approval.id,
+          },
+        });
+      }
+
+      await tx.strategyVersion.update({ where: { id: version.id }, data: { status: "ACTIVE" } });
       await tx.auditLog.create({
         data: {
           actor,
           action: "UPDATE",
           entityType: "StrategyVersion",
-          entityId: other.id,
-          before: { status: "ACTIVE" },
-          after: { status: "PAUSED" },
-          reason: `superseded by activation of version ${version.version} (approval ${approval.id})`,
+          entityId: version.id,
+          before: { status: version.status },
+          after: { status: "ACTIVE" },
+          reason: note ?? `deployment approved (approval ${approval.id})`,
           requestId: approval.id,
         },
       });
-    }
 
-    await tx.strategyVersion.update({ where: { id: version.id }, data: { status: "ACTIVE" } });
-    await tx.auditLog.create({
-      data: {
-        actor,
-        action: "UPDATE",
-        entityType: "StrategyVersion",
-        entityId: version.id,
-        before: { status: version.status },
-        after: { status: "ACTIVE" },
-        reason: note ?? `deployment approved (approval ${approval.id})`,
-        requestId: approval.id,
-      },
+      return {
+        approvalRequestId: approval.id,
+        action,
+        versionId: version.id,
+        versionStatus: "ACTIVE",
+        pausedVersionIds: otherActive.map((v) => v.id),
+      };
     });
-
-    return {
-      approvalRequestId: approval.id,
-      action,
-      versionId: version.id,
-      versionStatus: "ACTIVE",
-      pausedVersionIds: otherActive.map((v) => v.id),
-    };
-  });
+  } catch (err) {
+    // A concurrent activation won the race: the DB rejected this one with the
+    // single-ACTIVE unique violation. Map it into the existing governance
+    // conflict path (→ 409) and never leak the raw database error.
+    if (isSingleActiveConflict(err)) {
+      throw new GovernanceConflictError(
+        "another version of this strategy was activated concurrently — this activation was rolled back; re-review to supersede the now-active version",
+      );
+    }
+    throw err;
+  }
 }
 
 // ── Retire (terminal, audited) ───────────────────────────────────────────────

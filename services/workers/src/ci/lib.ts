@@ -20,6 +20,7 @@ import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { prisma } from "@nexus/db";
+import { assertDestructiveDbAllowed } from "./destructive-guard.js";
 
 // ── Paths ────────────────────────────────────────────────────────────────────
 const HERE = dirname(fileURLToPath(import.meta.url)); // .../services/workers/{src|dist}/ci
@@ -167,6 +168,7 @@ export async function countFixtureRows(): Promise<number> {
 }
 
 export async function resetFixtureEngineSignals(): Promise<void> {
+  assertDestructiveDbAllowed();
   await prisma.engineSignal.deleteMany({
     where: { featureSnapshotId: { in: [...FIXTURE_SNAPSHOT_IDS] } },
   });

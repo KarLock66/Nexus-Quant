@@ -19,6 +19,7 @@
  */
 
 import { Prisma, prisma } from "@nexus/db";
+import { assertDestructiveDbAllowed } from "./destructive-guard.js";
 import { ensureCiFixtureLineage } from "./fixtures.js";
 import {
   assert,
@@ -94,6 +95,7 @@ async function seedSseRows(featureSetId: string, strategyVersionId: string): Pro
 
 /** Remove every SSE-TEST fixture row — they must never outlive the phase. */
 async function cleanupSseRows(): Promise<void> {
+  assertDestructiveDbAllowed();
   await prisma.engineSignal.deleteMany({ where: { symbol: SSE_SYMBOL } });
   await prisma.featureSnapshot.deleteMany({ where: { symbol: SSE_SYMBOL } });
 }

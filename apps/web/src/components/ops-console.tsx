@@ -26,8 +26,6 @@ import type {
   SystemHealth,
 } from "@/lib/ops-types";
 import { Badge, Dot, Metric, Panel, relTime, type Tone } from "./console-ui";
-import { OperatorTokenField } from "./operator-token-field";
-import { getOperatorToken } from "@/lib/operator-token";
 
 /* ─────────────────── status → shared tone ─────────────────── */
 
@@ -346,10 +344,6 @@ function ControlsPanel({
   const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
 
   const run = async (id: OperatorActionId) => {
-    if (getOperatorToken().trim() === "") {
-      setResult({ ok: false, message: "an operator token is required (paste the OPS_CONTROL_TOKEN value)" });
-      return;
-    }
     setPending(id);
     setResult(null);
     try {
@@ -382,7 +376,6 @@ function ControlsPanel({
     >
       {d && (
         <div className="space-y-3">
-          <OperatorTokenField />
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
             {d.actions.map((a) => (
               <button

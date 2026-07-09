@@ -27,6 +27,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { prisma } from "@nexus/db";
+import { assertDestructiveDbAllowed } from "./destructive-guard.js";
 import { ensureCiFixtureLineage, fixtureQuoteProvider } from "./fixtures.js";
 import {
   evaluateTradingPermission,
@@ -146,6 +147,7 @@ function controlGateFor(cp: ControlPlane): RiskGateHook {
 }
 
 async function clearControlTables(): Promise<void> {
+  assertDestructiveDbAllowed();
   await prisma.controlAuditLog.deleteMany({});
   await prisma.protectionEvent.deleteMany({});
   await prisma.incident.deleteMany({});

@@ -1,4 +1,10 @@
 import { NextResponse } from "next/server";
+import {
+  checkLoginAllowed,
+  deriveLoginClientId,
+  recordLoginFailure,
+  recordLoginSuccess,
+} from "@/lib/login-rate-limit";
 import { operatorsConfigured, resolveOperator } from "@/lib/operator-identity";
 import { SESSION_COOKIE, SESSION_TTL_SECONDS, createSession } from "@/lib/session";
 
@@ -12,6 +18,12 @@ import { SESSION_COOKIE, SESSION_TTL_SECONDS, createSession } from "@/lib/sessio
  * operator identity — the middleware gate then admits reads/pages, and the
  * mutating routes derive their audit `actor` from this identity (never body).
  *
+ * Rate limited (B6): failed exchanges are counted in Redis-shared buckets
+ * (per-client + global backstop — see lib/login-rate-limit.ts for the key and
+ * trust policy) and, once over the threshold, requests are answered 429 BEFORE
+ * the body is parsed or any token compared. Successful logins clear the
+ * client's failure bucket, so legitimate operators are unaffected.
+ *
  * This is one of the only two unauthenticated API surfaces (see middleware), so
  * its body parse is self-contained rather than depending on the shared request
  * validators.
@@ -21,7 +33,31 @@ export const runtime = "nodejs";
 
 const MAX_TOKEN_LEN = 4096;
 
+/**
+ * Early body-size cap for this unauthenticated surface: reject on the declared
+ * Content-Length before `req.json()` ever buffers the payload. Generous vs
+ * MAX_TOKEN_LEN — even a 4096-char token fully \uXXXX-escaped (~24 KiB) plus
+ * the JSON wrapper fits — so no valid login is falsely rejected. A missing or
+ * unparseable header falls through to the parse, where the post-parse
+ * MAX_TOKEN_LEN check remains as defense-in-depth.
+ */
+const MAX_BODY_BYTES = 32 * 1024;
+
 export async function POST(req: Request) {
+  const declaredLength = Number(req.headers.get("content-length") ?? "");
+  if (Number.isFinite(declaredLength) && declaredLength > MAX_BODY_BYTES) {
+    return NextResponse.json({ error: "request body too large" }, { status: 413 });
+  }
+
+  const clientId = deriveLoginClientId(req);
+  const throttle = await checkLoginAllowed(clientId);
+  if (throttle.limited) {
+    return NextResponse.json(
+      { error: "too many failed login attempts — try again later" },
+      { status: 429, headers: { "retry-after": String(throttle.retryAfterSeconds) } },
+    );
+  }
+
   if (!operatorsConfigured()) {
     return NextResponse.json(
       { error: "authentication is not configured: no operator identities on the server (fail-closed)" },
@@ -48,6 +84,7 @@ export async function POST(req: Request) {
 
   const operator = resolveOperator(token);
   if (operator === null) {
+    await recordLoginFailure(clientId);
     return NextResponse.json({ error: "unauthorized: invalid operator token" }, { status: 401 });
   }
 
@@ -58,6 +95,8 @@ export async function POST(req: Request) {
       { status: 503 },
     );
   }
+
+  await recordLoginSuccess(clientId);
 
   const res = NextResponse.json({
     data: { operator: operator.id },

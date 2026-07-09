@@ -1,7 +1,6 @@
 "use client";
 
 import { postCommand, usePolledResource, type PollState } from "./use-polled-resource";
-import { getOperatorToken } from "./operator-token";
 import type {
   AuditTrailView,
   ControlCommandResult,
@@ -68,16 +67,11 @@ export const useAudit = (q: string) =>
     FAST,
   );
 
-export const runKill = (actor: string, reason: string) =>
-  postCommand<ControlCommandResult>(
-    CONTROL_ENDPOINTS.kill,
-    { actor, reason },
-    { authToken: getOperatorToken() },
-  );
+// Auth + identity come from the operator SESSION cookie (set at /login and sent
+// automatically on these same-origin POSTs); the server derives the audit actor
+// from it, so no client token or self-declared actor is sent (B2).
+export const runKill = (reason: string) =>
+  postCommand<ControlCommandResult>(CONTROL_ENDPOINTS.kill, { reason });
 
-export const runResume = (actor: string, reason: string) =>
-  postCommand<ControlCommandResult>(
-    CONTROL_ENDPOINTS.resume,
-    { actor, reason },
-    { authToken: getOperatorToken() },
-  );
+export const runResume = (reason: string) =>
+  postCommand<ControlCommandResult>(CONTROL_ENDPOINTS.resume, { reason });

@@ -23,8 +23,6 @@ import type {
   TradingPermissionView,
 } from "@/lib/control-types";
 import { Badge, Dot, fmtDuration, Metric, Panel, relTime, type Tone } from "./console-ui";
-import { OperatorTokenField } from "./operator-token-field";
-import { getOperatorToken } from "@/lib/operator-token";
 
 /* ─────────────────── state → tone ─────────────────── */
 
@@ -140,11 +138,9 @@ function KillSwitchPanel({
 }) {
   const engaged = permission.data?.reasons.find((r) => r.check === "kill_switch")?.ok === false;
   const blocked = permission.data?.permission === "BLOCKED";
-  const [actor, setActor] = useState("");
   const [reason, setReason] = useState("");
   const [pending, setPending] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
-  const actorId = useId();
   const reasonId = useId();
 
   const submit = async (kind: "kill" | "resume") => {
@@ -152,14 +148,10 @@ function KillSwitchPanel({
       setMsg({ ok: false, text: "a reason is required" });
       return;
     }
-    if (getOperatorToken().trim() === "") {
-      setMsg({ ok: false, text: "an operator token is required (paste the OPS_CONTROL_TOKEN value)" });
-      return;
-    }
     setPending(true);
     setMsg(null);
     try {
-      const r = kind === "kill" ? await runKill(actor || "operator", reason) : await runResume(actor || "operator", reason);
+      const r = kind === "kill" ? await runKill(reason) : await runResume(reason);
       setMsg({ ok: r.ok, text: r.message });
       setReason("");
       onChanged();
@@ -189,40 +181,25 @@ function KillSwitchPanel({
               ? "Trading is currently blocked by a control condition (see Trading Permission)."
               : "Trading is permitted. Engage the kill switch to stop all execution."}
         </div>
-        <OperatorTokenField />
-        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-          <div>
-            <label
-              htmlFor={actorId}
-              className="mb-1 block font-mono text-[10px] uppercase tracking-wider text-slate-500"
-            >
-              operator
-            </label>
-            <input
-              id={actorId}
-              value={actor}
-              onChange={(e) => setActor(e.target.value)}
-              placeholder="your id"
-              className="w-full rounded-md border border-(--color-line) bg-(--color-surface-900) px-3 py-2 text-[13px] text-slate-200 outline-none focus:border-(--color-accent-500)/50"
-            />
-          </div>
-          <div>
-            <label
-              htmlFor={reasonId}
-              className="mb-1 block font-mono text-[10px] uppercase tracking-wider text-slate-500"
-            >
-              reason <span className="text-(--color-negative)">*</span>
-            </label>
-            <input
-              id={reasonId}
-              value={reason}
-              onChange={(e) => setReason(e.target.value)}
-              placeholder="required"
-              required
-              aria-required="true"
-              className="w-full rounded-md border border-(--color-line) bg-(--color-surface-900) px-3 py-2 text-[13px] text-slate-200 outline-none focus:border-(--color-accent-500)/50"
-            />
-          </div>
+        <div>
+          <label
+            htmlFor={reasonId}
+            className="mb-1 block font-mono text-[10px] uppercase tracking-wider text-slate-500"
+          >
+            reason <span className="text-(--color-negative)">*</span>
+          </label>
+          <input
+            id={reasonId}
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            placeholder="required"
+            required
+            aria-required="true"
+            className="w-full rounded-md border border-(--color-line) bg-(--color-surface-900) px-3 py-2 text-[13px] text-slate-200 outline-none focus:border-(--color-accent-500)/50"
+          />
+          <p className="mt-1 font-mono text-[10px] text-slate-600">
+            Attributed to your signed-in operator identity.
+          </p>
         </div>
         <div className="flex gap-2">
           <button

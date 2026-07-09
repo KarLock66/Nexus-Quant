@@ -318,3 +318,298 @@ describe("retireStrategyVersion — terminal, audited", () => {
     ).rejects.toThrow(GovernanceValidationError);
   });
 });
+
+// ── Single-ACTIVE DB invariant (partial unique index — Batch 8) ───────────────
+//
+// The application already pauses other ACTIVE versions before activating, but two
+// approvals racing to activate different versions of the same strategy can both
+// read the pre-activation snapshot and both attempt to activate. Postgres'
+// partial unique index `StrategyVersion(strategyId) WHERE status = 'ACTIVE'` is
+// the final arbiter: the losing UPDATE raises a unique violation (Prisma P2002),
+// which governance-actions maps to a clean GovernanceConflictError (→ 409).
+//
+// The fake below ENFORCES that index the way Postgres would (a version may become
+// ACTIVE only if no other ACTIVE version exists for the same strategy) and rolls
+// back the transaction's writes on any throw. Two hooks model concurrency:
+//   • onPauseRead — a barrier, so both racers read the same pre-activation view;
+//   • staleActiveRead — forces the pause-read to return an MVCC-stale snapshot,
+//     reproducing a losing transaction whose read predates the winner's commit.
+
+/** A Prisma-shaped unique-constraint violation for the single-ACTIVE index. */
+function prismaUniqueViolation(): Error {
+  return Object.assign(new Error("\nUnique constraint failed on the fields"), {
+    code: "P2002",
+    meta: { target: "StrategyVersion_strategyId_active_key" },
+  });
+}
+
+function enforcingFakeDb(
+  seed: { strategies?: Row[]; versions?: Row[]; approvals?: Row[] },
+  hooks: { onPauseRead?: () => Promise<void> | void; staleActiveRead?: () => Row[] | null } = {},
+): {
+  db: GovernanceDb;
+  state: { strategies: Row[]; versions: Row[]; approvals: Row[]; audit: Row[] };
+} {
+  let nextId = 0;
+  const id = (prefix: string) => `${prefix}-${(nextId += 1)}`;
+  const state = {
+    strategies: seed.strategies ?? [],
+    versions: seed.versions ?? [],
+    approvals: seed.approvals ?? [],
+    audit: [] as Row[],
+  };
+
+  // A fresh tx per $transaction, each with its OWN row-level undo log. Rollback
+  // reverts only this transaction's writes — never a concurrent winner's — which
+  // is what makes the race test faithful (whole-state snapshot restore would
+  // clobber the winner's committed activation).
+  function makeTx(undo: Array<() => void>): GovernanceTx {
+    const removeFrom = (arr: Row[], row: Row) => () => {
+      const i = arr.indexOf(row);
+      if (i >= 0) arr.splice(i, 1);
+    };
+    const restore = (row: Row, data: Record<string, unknown>) => {
+      const prev: Record<string, unknown> = {};
+      for (const k of Object.keys(data)) prev[k] = row[k];
+      return () => Object.assign(row, prev);
+    };
+    return {
+      strategy: {
+        findUnique: async ({ where }) =>
+          (state.strategies.find((s) => s["name"] === where.name) as { id: string }) ?? null,
+        create: async ({ data }) => {
+          const row = { id: id("strat"), ...data };
+          state.strategies.push(row);
+          undo.push(removeFrom(state.strategies, row));
+          return row;
+        },
+      },
+      strategyVersion: {
+        findUnique: async ({ where }) =>
+          (state.versions.find((v) => v.id === where.id) as never) ?? null,
+        findFirst: async ({ where }) => {
+          const rows = state.versions
+            .filter((v) => v["strategyId"] === where.strategyId)
+            .sort((a, b) => (b["version"] as number) - (a["version"] as number));
+          return (rows[0] as unknown as { version: number }) ?? null;
+        },
+        findMany: async ({ where }) => {
+          if (where.status === "ACTIVE") {
+            await hooks.onPauseRead?.();
+            const stale = hooks.staleActiveRead?.();
+            if (stale != null) return stale as { id: string; version: number }[];
+          }
+          return state.versions.filter(
+            (v) =>
+              v["strategyId"] === where.strategyId &&
+              v["status"] === where.status &&
+              (where.id === undefined || v.id !== where.id.not),
+          ) as { id: string; version: number }[];
+        },
+        create: async ({ data }) => {
+          const row = { id: id("ver"), ...data } as Row;
+          state.versions.push(row);
+          undo.push(removeFrom(state.versions, row));
+          return row as { id: string; version: number };
+        },
+        update: async ({ where, data }) => {
+          const row = state.versions.find((v) => v.id === where.id)!;
+          // Enforce the partial unique index atomically (no await between the
+          // conflict check and the mutation), exactly as Postgres would.
+          if (data.status === "ACTIVE") {
+            const conflict = state.versions.find(
+              (v) =>
+                v.id !== row.id &&
+                v["strategyId"] === row["strategyId"] &&
+                v["status"] === "ACTIVE",
+            );
+            if (conflict) throw prismaUniqueViolation();
+          }
+          undo.push(restore(row, data));
+          Object.assign(row, data);
+          return row as { id: string; status: string };
+        },
+      },
+      approvalRequest: {
+        findUnique: async ({ where }) =>
+          (state.approvals.find((a) => a.id === where.id) as never) ?? null,
+        create: async ({ data }) => {
+          const row = { id: id("appr"), ...data } as Row;
+          state.approvals.push(row);
+          undo.push(removeFrom(state.approvals, row));
+          return row as { id: string };
+        },
+        update: async ({ where, data }) => {
+          const row = state.approvals.find((a) => a.id === where.id)!;
+          undo.push(restore(row, data));
+          Object.assign(row, data);
+          return row as { id: string };
+        },
+      },
+      auditLog: {
+        create: async ({ data }) => {
+          const row = { id: id("audit"), ...data } as Row;
+          state.audit.push(row);
+          undo.push(removeFrom(state.audit, row));
+          return {};
+        },
+      },
+    };
+  }
+
+  const db: GovernanceDb = {
+    $transaction: async (fn) => {
+      const undo: Array<() => void> = [];
+      try {
+        return await fn(makeTx(undo));
+      } catch (err) {
+        for (let i = undo.length - 1; i >= 0; i -= 1) undo[i]!();
+        throw err;
+      }
+    },
+  };
+  return { db, state };
+}
+
+/** Release both racers only once N have arrived at the pause-read. */
+function barrier(n: number): () => Promise<void> {
+  let arrived = 0;
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  return () => {
+    arrived += 1;
+    if (arrived >= n) release();
+    return gate;
+  };
+}
+
+describe("single-ACTIVE DB invariant — activation conflict mapping (Batch 8)", () => {
+  const seedActiveStrategy = () => ({
+    strategies: [{ id: "strat-0", name: "core-technical-live" }],
+    versions: [
+      { id: "ver-1", strategyId: "strat-0", version: 1, status: "DRAFT", createdBy: "operator:alice" },
+      { id: "ver-2", strategyId: "strat-0", version: 2, status: "DRAFT", createdBy: "operator:alice" },
+    ],
+    approvals: [
+      {
+        id: "appr-1",
+        kind: "DEPLOY_APPROVAL",
+        status: "PENDING",
+        entityType: "StrategyVersion",
+        entityId: "ver-1",
+        requestedBy: "operator:alice",
+      },
+      {
+        id: "appr-2",
+        kind: "DEPLOY_APPROVAL",
+        status: "PENDING",
+        entityType: "StrategyVersion",
+        entityId: "ver-2",
+        requestedBy: "operator:alice",
+      },
+    ],
+  });
+
+  it("keeps exactly one ACTIVE across pause-then-activate with the index enforced", async () => {
+    const { db, state } = enforcingFakeDb(seedActiveStrategy());
+    // Activate v1.
+    const out1 = await reviewDeployApproval(
+      { approvalId: "appr-1", action: "approve", actor: "operator:bob", note: null },
+      db,
+    );
+    expect(out1.versionStatus).toBe("ACTIVE");
+    expect(state.versions.filter((v) => v["status"] === "ACTIVE")).toHaveLength(1);
+    // Approve v2 → pauses v1, activates v2, still exactly one ACTIVE (the index
+    // never trips because the pause happens first, in-transaction).
+    const out2 = await reviewDeployApproval(
+      { approvalId: "appr-2", action: "approve", actor: "operator:bob", note: null },
+      db,
+    );
+    expect(out2.pausedVersionIds).toEqual(["ver-1"]);
+    expect(state.versions.find((v) => v.id === "ver-1")!["status"]).toBe("PAUSED");
+    expect(state.versions.find((v) => v.id === "ver-2")!["status"]).toBe("ACTIVE");
+    expect(state.versions.filter((v) => v["status"] === "ACTIVE")).toHaveLength(1);
+  });
+
+  it("concurrent approvals of two versions → exactly one ACTIVE; the loser gets a clean 409", async () => {
+    const gate = barrier(2);
+    const { db, state } = enforcingFakeDb(seedActiveStrategy(), { onPauseRead: gate });
+
+    const results = await Promise.allSettled([
+      reviewDeployApproval(
+        { approvalId: "appr-1", action: "approve", actor: "operator:bob", note: null },
+        db,
+      ),
+      reviewDeployApproval(
+        { approvalId: "appr-2", action: "approve", actor: "operator:carol", note: null },
+        db,
+      ),
+    ]);
+
+    const fulfilled = results.filter((r) => r.status === "fulfilled");
+    const rejected = results.filter(
+      (r): r is PromiseRejectedResult => r.status === "rejected",
+    );
+    // The DB index admits exactly one winner; the loser is rejected.
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    // Losing failure is the governance conflict, NOT a raw database error.
+    expect(rejected[0]!.reason).toBeInstanceOf(GovernanceConflictError);
+    expect(String(rejected[0]!.reason.message)).not.toMatch(/P2002|Unique constraint|prisma/i);
+    // Invariant holds at the data layer: one and only one ACTIVE version.
+    expect(state.versions.filter((v) => v["status"] === "ACTIVE")).toHaveLength(1);
+  });
+
+  it("losing activation maps to GovernanceConflictError and rolls back with NO partial state", async () => {
+    // Winner already committed: v1 ACTIVE. The loser (approving v2) reads an
+    // MVCC-stale snapshot (no ACTIVE yet), so it does not pause v1 and its
+    // activation UPDATE trips the index.
+    const seed = seedActiveStrategy();
+    seed.versions[0]!["status"] = "ACTIVE"; // v1 already ACTIVE (winner)
+    seed.approvals[0]!["status"] = "APPROVED";
+    const { db, state } = enforcingFakeDb(seed, { staleActiveRead: () => [] });
+
+    await expect(
+      reviewDeployApproval(
+        { approvalId: "appr-2", action: "approve", actor: "operator:carol", note: null },
+        db,
+      ),
+    ).rejects.toBeInstanceOf(GovernanceConflictError);
+
+    // Rolled back cleanly: v2 stays DRAFT, its approval stays PENDING, v1 remains
+    // the sole ACTIVE — no half-applied activation.
+    expect(state.versions.find((v) => v.id === "ver-2")!["status"]).toBe("DRAFT");
+    expect(state.approvals.find((a) => a.id === "appr-2")!["status"]).toBe("PENDING");
+    const active = state.versions.filter((v) => v["status"] === "ACTIVE");
+    expect(active).toHaveLength(1);
+    expect(active[0]!.id).toBe("ver-1");
+  });
+
+  it("a non-racing approve is unaffected by the index (existing flow unchanged)", async () => {
+    // Same enforcing index, no concurrency: behaves identically to the plain path.
+    const { db, state } = enforcingFakeDb({
+      strategies: [{ id: "strat-0", name: "core-technical-live" }],
+      versions: [
+        { id: "ver-1", strategyId: "strat-0", version: 1, status: "DRAFT", createdBy: "operator:alice" },
+      ],
+      approvals: [
+        {
+          id: "appr-1",
+          kind: "DEPLOY_APPROVAL",
+          status: "PENDING",
+          entityType: "StrategyVersion",
+          entityId: "ver-1",
+          requestedBy: "operator:alice",
+        },
+      ],
+    });
+    const out = await reviewDeployApproval(
+      { approvalId: "appr-1", action: "approve", actor: "operator:bob", note: "lgtm" },
+      db,
+    );
+    expect(out.versionStatus).toBe("ACTIVE");
+    expect(out.pausedVersionIds).toEqual([]);
+    expect(state.approvals[0]!["status"]).toBe("APPROVED");
+    expect(state.audit.some((a) => a["action"] === "APPROVE")).toBe(true);
+  });
+});

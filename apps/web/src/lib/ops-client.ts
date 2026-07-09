@@ -1,7 +1,6 @@
 "use client";
 
 import { postCommand, usePolledResource, type PollState } from "./use-polled-resource";
-import { getOperatorToken } from "./operator-token";
 import type {
   ActionsCatalog,
   AlertsSummary,
@@ -54,10 +53,10 @@ export const useRuntimeMetrics = () =>
 export const useActionsCatalog = () =>
   usePolledResource<ActionsCatalog>(OPS_ENDPOINTS.actions, "ops/actions", 30_000);
 
-/** POST an operator action; returns the typed result envelope. */
+/**
+ * POST an operator action; returns the typed result envelope. Auth is the
+ * operator SESSION cookie (set at /login, sent automatically on this same-origin
+ * POST) — no client token is attached (B2).
+ */
 export const runOperatorAction = (id: OperatorActionId): Promise<OperatorActionResult> =>
-  postCommand<OperatorActionResult>(
-    OPS_ENDPOINTS.actions,
-    { action: id },
-    { authToken: getOperatorToken() },
-  );
+  postCommand<OperatorActionResult>(OPS_ENDPOINTS.actions, { action: id });

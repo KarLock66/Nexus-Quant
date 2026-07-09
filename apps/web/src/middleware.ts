@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
+import { isRegisteredOperatorId } from "@/lib/operator-registry";
 import { SESSION_COOKIE, verifySession } from "@/lib/session";
 
 /**
@@ -9,6 +10,14 @@ import { SESSION_COOKIE, verifySession } from "@/lib/session";
  * session cookie (see lib/session.ts). Unauthenticated:
  *   - API  -> 401 JSON (machine-readable; the poll/command clients surface it)
  *   - page -> 302 redirect to /login?next=<path>
+ *
+ * B4 — membership re-check on the READ path: a session outlives registry edits
+ * by up to its TTL (12h), so a valid signature alone is not enough. The subject
+ * must ALSO still be present in the operator registry (lib/operator-registry.ts,
+ * Edge-safe by design — pure env parsing, no node:crypto). A de-registered
+ * operator's live session is treated exactly like an unauthenticated request:
+ * API -> 401, page -> login redirect. Mirrors the B3 check on the mutation path
+ * (lib/operator-auth.ts).
  *
  * The login/logout endpoints and the /login page are the only unauthenticated
  * surfaces (you must be able to reach them to obtain a session). The session is
@@ -43,7 +52,7 @@ export async function middleware(req: NextRequest): Promise<NextResponse> {
   if (isApi && PUBLIC_API.has(pathname)) return NextResponse.next();
 
   const claims = await verifySession(req.cookies.get(SESSION_COOKIE)?.value);
-  if (claims !== null) return NextResponse.next();
+  if (claims !== null && isRegisteredOperatorId(claims.sub)) return NextResponse.next();
 
   if (isApi) return unauthenticatedApi();
 

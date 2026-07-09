@@ -1,49 +1,54 @@
-import { createHash, timingSafeEqual } from "node:crypto";
+import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
+import { isRegisteredOperatorId } from "@/lib/operator-registry";
+import { SESSION_COOKIE, verifySession } from "@/lib/session";
 
 /**
- * Fail-closed bearer-token guard for the MUTATING control-plane routes
- * (POST /api/v1/control/kill, /api/v1/control/resume, /api/v1/ops/actions).
+ * Identity guard for the MUTATING control-plane / governance routes (B2).
  *
- * These endpoints change the trading runtime's state; without this guard anyone
- * who can reach the web tier can stop/resume trading. Server-only (node:crypto):
- *  - OPS_CONTROL_TOKEN unset  -> every command is refused with 503 (fail-closed:
- *    an unconfigured control plane accepts NO commands rather than all of them);
- *  - token set                -> the request must carry `Authorization: Bearer <token>`.
- * Tokens are compared as SHA-256 digests via timingSafeEqual so the comparison is
- * constant-time and length differences leak nothing.
+ * The B1 middleware already requires a valid operator session to reach any
+ * /api/v1/* route; this re-verifies that session IN-HANDLER (defense in depth)
+ * and returns the AUTHENTICATED operator identity. Mutations use that identity
+ * as their audit `actor` and four-eyes principal, replacing the former
+ * self-declared `body.actor` — a client string that let one caller attribute an
+ * action to any name and approve their own strategy deployment (defeating
+ * separation of duties).
  *
- * Read-only control/ops GET routes stay open by design (observability); only
- * state-changing commands are gated.
+ * The session was minted at /login from a specific operator's token (see
+ * lib/operator-identity.ts), so `operatorId` is an authenticated principal, not
+ * a claim. Distinct operators hold distinct tokens -> distinct identities ->
+ * four-eyes is real.
+ *
+ * B3 — membership re-check: a session outlives registry edits by up to its TTL
+ * (12h), so a valid signature alone is not enough on the mutation path. The
+ * subject must ALSO still be present in the operator registry (Edge-safe parse,
+ * lib/operator-registry.ts); a de-registered operator's live session gets 403
+ * immediately instead of mutating until cookie expiry.
+ *
+ * Usage (first lines of every mutating handler):
+ *   const auth = await requireOperatorSession();
+ *   if (auth instanceof NextResponse) return auth;
+ *   // auth.operatorId is the authenticated actor
  */
 
-const sha256 = (value: string): Buffer => createHash("sha256").update(value, "utf8").digest();
+export interface OperatorAuth {
+  operatorId: string;
+}
 
-/**
- * Returns `null` when the request is authorized, otherwise the error response to
- * send verbatim. Usage (first line of every mutating handler):
- *   const denied = requireOperatorAuth(req); if (denied) return denied;
- */
-export function requireOperatorAuth(req: Request): NextResponse | null {
-  const configured = (process.env.OPS_CONTROL_TOKEN ?? "").trim();
-  if (configured === "") {
+export async function requireOperatorSession(): Promise<OperatorAuth | NextResponse> {
+  const store = await cookies();
+  const claims = await verifySession(store.get(SESSION_COOKIE)?.value);
+  if (claims === null) {
     return NextResponse.json(
-      {
-        error:
-          "control commands are disabled: OPS_CONTROL_TOKEN is not configured on the server (fail-closed)",
-      },
-      { status: 503 },
+      { error: "unauthenticated: a valid operator session is required" },
+      { status: 401 },
     );
   }
-
-  const header = req.headers.get("authorization") ?? "";
-  const match = /^Bearer\s+(.+)$/i.exec(header);
-  const presented = (match?.[1] ?? "").trim();
-  if (presented === "" || !timingSafeEqual(sha256(presented), sha256(configured))) {
+  if (!isRegisteredOperatorId(claims.sub)) {
     return NextResponse.json(
-      { error: "unauthorized: missing or invalid operator token" },
-      { status: 401, headers: { "WWW-Authenticate": 'Bearer realm="nexus-control"' } },
+      { error: "forbidden: operator is no longer registered" },
+      { status: 403 },
     );
   }
-  return null;
+  return { operatorId: claims.sub };
 }

@@ -1,36 +1,37 @@
 import { NextResponse } from "next/server";
 import { resumeKill } from "@/lib/control";
-import { requireOperatorAuth } from "@/lib/operator-auth";
+import { internalErrorResponse } from "@/lib/api-error";
+import { requireOperatorSession } from "@/lib/operator-auth";
+import {
+  canonicalTimestamp,
+  readJsonObject,
+  requireStringField,
+} from "@/lib/api-validate";
 
 /**
  * POST /api/v1/control/resume — disengage the global kill switch (Section C). The
  * runtime never auto-resumes a manual kill — only this explicit operator action clears
- * it. Requires `Authorization: Bearer <OPS_CONTROL_TOKEN>` (fail-closed: 503 when the
- * server has no token configured, 401 on a bad/missing token).
- * Body: { actor?: string, reason: string }. Records an immutable audit entry.
+ * it. Requires a valid operator session (B1 middleware + in-handler check); the audit
+ * `actor` is the AUTHENTICATED operator identity, never a client-supplied value (B2).
+ * Body: { reason: string } — same rules as /control/kill. Records an immutable audit
+ * entry.
  */
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 export async function POST(req: Request) {
-  const denied = requireOperatorAuth(req);
-  if (denied) return denied;
-  let body: unknown;
+  const auth = await requireOperatorSession();
+  if (auth instanceof NextResponse) return auth;
+  const body = await readJsonObject(req);
+  if (!body.ok) return NextResponse.json({ error: body.error }, { status: 400 });
+  const reason = requireStringField(body.value, "reason", 2000);
+  if (!reason.ok) return NextResponse.json({ error: reason.error }, { status: 400 });
   try {
-    body = await req.json();
-  } catch {
-    return NextResponse.json({ error: "invalid JSON body" }, { status: 400 });
-  }
-  const reason = (body as { reason?: unknown })?.reason;
-  const actorRaw = (body as { actor?: unknown })?.actor;
-  if (typeof reason !== "string" || reason.trim() === "") {
-    return NextResponse.json({ error: "a non-empty 'reason' is required" }, { status: 400 });
-  }
-  const actor = typeof actorRaw === "string" && actorRaw.trim() !== "" ? actorRaw : "operator";
-  try {
-    const data = await resumeKill(actor, reason);
-    return NextResponse.json({ data, generatedAt: new Date().toISOString() });
+    const data = await resumeKill(auth.operatorId, reason.value);
+    return NextResponse.json({ data, generatedAt: canonicalTimestamp() });
   } catch (err) {
-    return NextResponse.json({ error: "failed to resume", detail: String(err) }, { status: 500 });
+    // Batch 7: generic 500 — the real error stays in the server log, keyed by
+    // the returned correlation id.
+    return internalErrorResponse("failed to resume", err);
   }
 }

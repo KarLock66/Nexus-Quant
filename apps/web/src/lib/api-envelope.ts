@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { canonicalTimestamp } from "./api-validate";
 
 /**
  * Phase 11B — hardened response contract for every /api/v1/signals/* endpoint.
@@ -51,7 +52,8 @@ interface MetaInput {
 function buildMeta(input: MetaInput): SignalApiMeta {
   return {
     source: input.source ?? "db",
-    timestamp: new Date().toISOString(),
+    // Canonical ISO-8601 UTC (Phase 11C timestamp normalization — format only).
+    timestamp: canonicalTimestamp(),
     featureHash: input.featureHash ?? NO_FEATURE_HASH,
     ...(input.extra ?? {}),
   };

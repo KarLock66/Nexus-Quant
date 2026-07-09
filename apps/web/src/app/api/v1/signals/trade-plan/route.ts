@@ -1,5 +1,6 @@
 import { getTradePlans } from "@/lib/trade-plan";
 import { firstFeatureHash, signalError, signalOk } from "@/lib/api-envelope";
+import { parseSymbolFilter } from "@/lib/api-validate";
 
 /**
  * GET /api/v1/signals/trade-plan — the actionable TradePlan per active symbol (Phase 10C-1):
@@ -11,12 +12,13 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 export async function GET(request: Request) {
+  const symbols = parseSymbolFilter(
+    new URL(request.url).searchParams.get("symbol"),
+    "symbol",
+  );
+  if (!symbols.ok) return signalError(400, symbols.error);
   try {
-    const raw = new URL(request.url).searchParams.get("symbol");
-    const symbols = raw
-      ? raw.split(",").map((s) => s.trim()).filter((s) => s.length > 0)
-      : undefined;
-    const data = await getTradePlans(symbols);
+    const data = await getTradePlans(symbols.value);
     return signalOk(data, {
       source: "db",
       featureHash: firstFeatureHash(

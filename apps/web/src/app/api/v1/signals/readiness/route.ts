@@ -1,5 +1,6 @@
 import { getReadiness } from "@/lib/trade-plan";
 import { signalError, signalOk } from "@/lib/api-envelope";
+import { parseSymbolFilter } from "@/lib/api-validate";
 
 /**
  * GET /api/v1/signals/readiness — the deterministic 0..100 readiness score + action verdict
@@ -11,12 +12,13 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 export async function GET(request: Request) {
+  const symbols = parseSymbolFilter(
+    new URL(request.url).searchParams.get("symbol"),
+    "symbol",
+  );
+  if (!symbols.ok) return signalError(400, symbols.error);
   try {
-    const raw = new URL(request.url).searchParams.get("symbol");
-    const symbols = raw
-      ? raw.split(",").map((s) => s.trim()).filter((s) => s.length > 0)
-      : undefined;
-    const data = await getReadiness(symbols);
+    const data = await getReadiness(symbols.value);
     return signalOk(data, { source: "db" });
   } catch (err) {
     return signalError(500, `failed to load readiness: ${String(err)}`);

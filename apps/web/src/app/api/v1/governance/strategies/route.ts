@@ -5,36 +5,39 @@ import {
   registerStrategyVersion,
   type RegisterStrategyInput,
 } from "@/lib/governance-actions";
-import { requireOperatorAuth } from "@/lib/operator-auth";
+import { internalErrorResponse } from "@/lib/api-error";
+import { requireOperatorSession } from "@/lib/operator-auth";
+import { canonicalTimestamp, readJsonObject } from "@/lib/api-validate";
 
 /**
  * POST /api/v1/governance/strategies — register a strategy version (production
- * governance path). Requires `Authorization: Bearer <OPS_CONTROL_TOKEN>`
- * (fail-closed: 503 with no token configured, 401 on a bad token).
+ * governance path). Requires a valid operator session (B1 middleware +
+ * in-handler check).
  *
- * Body: { strategyName, actor, rationale, description, hypothesis, entryLogic,
+ * Body: { strategyName, rationale, description, hypothesis, entryLogic,
  * exitLogic, riskRules, failureConditions, parameters, validRegimes,
- * volatilityBounds } — ALL mandatory (fail-closed validation). Creates the
- * Strategy (find-or-create by name), an immutable DRAFT StrategyVersion, a
- * PENDING DEPLOY_APPROVAL request, and audit rows — it NEVER activates;
- * activation requires a second actor's approval (four-eyes).
+ * volatilityBounds } — ALL mandatory (fail-closed validation). The requesting
+ * `actor` is the AUTHENTICATED operator identity (B2), so a version's requester
+ * is bound to a real principal and cannot be spoofed to satisfy four-eyes at
+ * approval time. Creates the Strategy (find-or-create by name), an immutable
+ * DRAFT StrategyVersion, a PENDING DEPLOY_APPROVAL request, and audit rows — it
+ * NEVER activates; activation requires a DIFFERENT operator's approval.
  */
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 export async function POST(req: Request) {
-  const denied = requireOperatorAuth(req);
-  if (denied) return denied;
-  let body: unknown;
+  const auth = await requireOperatorSession();
+  if (auth instanceof NextResponse) return auth;
+  const body = await readJsonObject(req);
+  if (!body.ok) return NextResponse.json({ error: body.error }, { status: 400 });
   try {
-    body = await req.json();
-  } catch {
-    return NextResponse.json({ error: "invalid JSON body" }, { status: 400 });
-  }
-  try {
-    const data = await registerStrategyVersion(body as RegisterStrategyInput);
+    const data = await registerStrategyVersion({
+      ...(body.value as unknown as RegisterStrategyInput),
+      actor: auth.operatorId,
+    });
     return NextResponse.json(
-      { data, generatedAt: new Date().toISOString() },
+      { data, generatedAt: canonicalTimestamp() },
       { status: 201 },
     );
   } catch (err) {
@@ -44,9 +47,8 @@ export async function POST(req: Request) {
     if (err instanceof GovernanceConflictError) {
       return NextResponse.json({ error: err.message }, { status: 409 });
     }
-    return NextResponse.json(
-      { error: "failed to register strategy version", detail: String(err) },
-      { status: 500 },
-    );
+    // Batch 7: generic 500 — the real error stays in the server log, keyed by
+    // the returned correlation id.
+    return internalErrorResponse("failed to register strategy version", err);
   }
 }
