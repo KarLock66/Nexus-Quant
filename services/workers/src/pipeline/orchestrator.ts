@@ -51,6 +51,12 @@ import {
   type StrategyRegistry,
 } from "../execution/index.js";
 import { errMsg } from "../lib/log.js";
+import { PipelineDataError } from "./errors.js";
+import {
+  assertValidSnapshotRow,
+  assertValidStrategyVersionRow,
+  malformedSignalReason,
+} from "./validate.js";
 
 export type LogFn = (
   level: "info" | "warn" | "error",
@@ -58,15 +64,12 @@ export type LogFn = (
   extra?: object,
 ) => void;
 
-/** Missing upstream data — the tick refuses to run rather than fabricate input. */
-export class PipelineDataError extends Error {
-  readonly code: string;
-  constructor(message: string, code: string) {
-    super(message);
-    this.name = "PipelineDataError";
-    this.code = code;
-  }
-}
+// Missing/malformed upstream data throws PipelineDataError. It is defined once in
+// ./errors.js (so ./validate.js can throw the SAME class without a circular import)
+// and re-exported here to keep this module's public surface unchanged — every
+// `throw new PipelineDataError(...)` below and the validation layer now share one
+// identity, so `instanceof` / `.code` handling is uniform across the pipeline.
+export { PipelineDataError };
 
 export interface PipelineDeps {
   prisma: PrismaClient;
@@ -97,6 +100,12 @@ export interface PipelineTickResult {
   generated: number;
   refused: number;
   lineageRejected: number;
+  /**
+   * Signals generated but rejected fail-closed by the contract gate (bad enum,
+   * unquantized confidence, or non-verbatim lineage) before publication. Always
+   * 0 on a healthy engine; a non-zero value flags an engine/projection regression.
+   */
+  malformedRejected: number;
   /**
    * sha256 fingerprint of the exact resolved input (lineage + snapshot set).
    * Identical inputHash across runs proves the ticks consumed identical inputs;
@@ -143,6 +152,12 @@ async function resolvePersistedLineage(prisma: PrismaClient): Promise<{
       "MISSING_ACTIVE_STRATEGY",
     );
   }
+  // Admission boundary (Phase 11C Stage 1): validate the RAW governance row
+  // BEFORE the JsonValue -> Record cast below. A non-object `parameters` would
+  // otherwise be laundered by the cast and silently resolve to the built-in
+  // defaults (resolveSignalParams) — masking a corrupt ACTIVE strategy. Throwing
+  // here makes that cast provably safe.
+  assertValidStrategyVersionRow({ id: version.id, parameters: version.parameters });
   return {
     featureSetId: def.id,
     strategyVersion: {
@@ -216,6 +231,29 @@ export async function runSignalPipelineTick(
     a.symbol < b.symbol ? -1 : a.symbol > b.symbol ? 1 : 0,
   );
 
+  // Admission boundary (Phase 11C Stage 1): every candidate row that will be
+  // fingerprinted and fed to the engine must be structurally sound FIRST. A
+  // malformed persisted row throws PipelineDataError here — before the inputHash
+  // is computed and before any signal is generated — rather than being silently
+  // coerced (a non-object `features` cast to Record<string, number>, a symbol
+  // dropped out of the inputHash) or crashing untyped mid-tick. Well-formed rows
+  // pass untouched, so determinism and the golden-snapshot contract are unchanged.
+  for (const snap of ordered) {
+    assertValidSnapshotRow({
+      id: snap.id,
+      symbol: snap.symbol,
+      ts: snap.ts,
+      featureHash: snap.featureHash,
+      features: snap.features,
+      dqReport: {
+        id: snap.dqReport.id,
+        score: snap.dqReport.score,
+        status: snap.dqReport.status,
+        datasetHash: snap.dqReport.datasetHash,
+      },
+    });
+  }
+
   // Explicit input fingerprint (Phase 11B): the exact dataset this tick runs on.
   const inputHash = computeInputHash({
     featureSetId,
@@ -239,6 +277,7 @@ export async function runSignalPipelineTick(
   let generated = 0;
   let refused = 0;
   let lineageRejected = 0;
+  let malformedRejected = 0;
   // DecisionEvents produced this tick, collected for the downstream (opt-in)
   // execution stage. Collected regardless so the decision path is unchanged.
   const decisions: DecisionEvent[] = [];
@@ -280,6 +319,30 @@ export async function runSignalPipelineTick(
       decision: gen.signal.decision,
       confidence: gen.signal.confidence,
     });
+
+    // Generated-signal contract gate (fail-closed): the engine's output must
+    // satisfy the EngineSignal wire contract — decision enums, quantized-
+    // confidence format, and verbatim lineage — BEFORE lineage hashing or
+    // publication. This adds the enum/format checks that lineage verification
+    // does not cover. On a healthy engine it never fires (generateSignal builds
+    // these fields verbatim); a projection/format regression is dropped here and
+    // never published, rather than persisted as a malformed signal.
+    const malformed = malformedSignalReason(gen.signal, {
+      featureSnapshot,
+      dqReport,
+      strategyVersion: sv,
+    });
+    if (malformed !== null) {
+      malformedRejected += 1;
+      log("error", "generated signal violates contract — refusing to publish", {
+        tickId,
+        symbol: snap.symbol,
+        strategyVersionId: sv.id,
+        featureSnapshotId: snap.id,
+        detail: malformed,
+      });
+      continue;
+    }
 
     // verify lineage BEFORE anything downstream (fail-closed). The candidate
     // carries the same lineage the engine just stamped; a projection bug fails
@@ -355,6 +418,7 @@ export async function runSignalPipelineTick(
     generated,
     refused,
     lineageRejected,
+    malformedRejected,
     inputHash,
     ...(execution !== undefined ? { execution } : {}),
   };
