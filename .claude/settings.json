@@ -4,7 +4,11 @@
       "PowerShell(node -v)",
       "PowerShell(pnpm -v)",
       "PowerShell(python --version)",
-      "PowerShell(docker --version)"
+      "PowerShell(docker --version)",
+      "Bash(git -C \"c:/Users/sh/Nexus Quant\" log --oneline -15)",
+      "Bash(git -C \"c:/Users/sh/Nexus Quant\" show --stat f468b9b)",
+      "Bash(cd \"c:/Users/sh/Nexus Quant/services/workers\" && cat tsconfig.json package.json 2>/dev/null | head -60 && echo \"=== base tsconfig ===\" && cat ../../tsconfig.json 2>/dev/null | head -40)",
+      "Read(//c/Users/**)"
     ]
   }
 }

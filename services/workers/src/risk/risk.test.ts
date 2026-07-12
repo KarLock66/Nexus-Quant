@@ -38,6 +38,7 @@ import {
   FileRiskEventStore,
   InMemoryRiskEventStore,
   RiskJournalCorruptionError,
+  assertValidRiskJournalRecord,
   type RiskEventStore,
 } from "./events.js";
 import { createRiskExecutionGate } from "./integration.js";
@@ -45,7 +46,7 @@ import { DEFAULT_RISK_LIMITS, evaluatePreTrade, projectOrder } from "./gate.js";
 import { recoverRiskState, RiskRecoveryError } from "./recovery.js";
 import { reconstructRiskState } from "./state.js";
 import { sizePosition } from "./sizer.js";
-import type { ProposedOrder, RiskLimits } from "./types.js";
+import type { ProposedOrder, RiskJournalRecord, RiskLimits } from "./types.js";
 
 // ── Fixtures ───────────────────────────────────────────────────────────────────
 
@@ -513,5 +514,151 @@ describe("Integration — the execution stage routes every order through the ris
     expect(r.filled).toBeGreaterThanOrEqual(1);
     expect(r.blocked).toBe(0);
     expect((await store.readAll()).filter((rec) => rec.type === "RISK_CHECK_PASSED").length).toBe(r.filled);
+  });
+});
+
+// ── Structural record admission (Phase 11C Stage 2) ────────────────────────────
+//
+// The state fold (applyRiskRecord) silently SKIPS a record whose `type` it does
+// not recognize — its exhaustiveness check is compile-time only — and coerces a
+// malformed capital snapshot to 0 via parseDecimal. Both were fail-OPEN under
+// journal corruption: the tests below prove the admission boundary now refuses
+// the record at read (typed RiskJournalCorruptionError → RiskRecoveryError → the
+// worker starts HALTED) instead of recovering a silently-wrong state.
+
+describe("Risk journal — structural record admission (Phase 11C Stage 2)", () => {
+  /** Serialize records as JSONL, tampering each parsed line via `mutate`. */
+  async function writeMutatedJournal(
+    file: string,
+    records: RiskJournalRecord[],
+    mutate: (rec: Record<string, any>) => void,
+  ): Promise<void> {
+    const lines = records.map((r) => {
+      const obj = JSON.parse(JSON.stringify(r)) as Record<string, any>;
+      mutate(obj);
+      return JSON.stringify(obj);
+    });
+    await writeFile(file, `${lines.join("\n")}\n`);
+  }
+
+  it("a tampered halt record HALTS recovery instead of silently clearing the halt", async () => {
+    // A manual operator halt journals exactly one TRADING_HALTED record — the
+    // only durable memory that trading must stay stopped across a restart.
+    const store = new InMemoryRiskEventStore();
+    const engine = new RiskEngine({ store });
+    await engine.halt("manual operator halt");
+    expect(engine.isHalted()).toBe(true);
+    const recs = await store.readAll();
+    expect(recs.some((r) => r.type === "TRADING_HALTED")).toBe(true);
+    // Sanity: the untampered journal reconstructs HALTED.
+    expect(reconstructRiskState(recs).halted).toBe(true);
+
+    const dir = await mkdtemp(join(tmpdir(), "nexus-risk-admit-"));
+    const file = join(dir, "halt-tampered.jsonl");
+    try {
+      // Damage ONLY the halt record's type string — still parseable JSON with a
+      // contiguous seq. Before Stage 2 the fold skipped the unknown type and the
+      // recovered state came back UNHALTED (fail-open: trading would resume with
+      // no operator reset). Admission now refuses the record, recovery throws,
+      // and the worker's existing handler starts the engine HALTED (fail-closed).
+      await writeMutatedJournal(file, recs, (obj) => {
+        if (obj["type"] === "TRADING_HALTED") obj["type"] = "TRADING_HALTEDX";
+      });
+      await expect(new FileRiskEventStore(file).readAll()).rejects.toBeInstanceOf(
+        RiskJournalCorruptionError,
+      );
+      await expect(new FileRiskEventStore(file).readAll()).rejects.toThrow(
+        /not a known risk event type/,
+      );
+      await expect(recoverRiskState(new FileRiskEventStore(file))).rejects.toBeInstanceOf(
+        RiskRecoveryError,
+      );
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  /** Records from one PASSED evaluation (carries a full capital snapshot). */
+  async function passedRecords(): Promise<RiskJournalRecord[]> {
+    const store = new InMemoryRiskEventStore();
+    const engine = new RiskEngine({ store, limits: limits() });
+    await engine.evaluate(mkOrder("BTC-PERP", "LONG", 1, 100_000), view(1_000_000), {});
+    return store.readAll();
+  }
+
+  const CASES: Array<{
+    name: string;
+    mutate: (r: Record<string, any>) => void;
+    detail: RegExp;
+  }> = [
+    {
+      name: "capital.accountEquity as garbage text (used to become baseline 0.00 silently)",
+      mutate: (r) => {
+        if (r["capital"] !== null) r["capital"].accountEquity = "abc";
+      },
+      detail: /accountEquity/,
+    },
+    {
+      name: "capital.accountEquity as a number instead of a decimal string",
+      mutate: (r) => {
+        if (r["capital"] !== null) r["capital"].accountEquity = 1_000_000;
+      },
+      detail: /accountEquity/,
+    },
+    {
+      name: "capital as an array instead of an object",
+      mutate: (r) => {
+        if (r["capital"] !== null) r["capital"] = [];
+      },
+      detail: /capital is not a JSON object/,
+    },
+    {
+      name: "unknown kill-switch trigger",
+      mutate: (r) => {
+        r["trigger"] = "NOT_A_TRIGGER";
+      },
+      detail: /kill-switch trigger/,
+    },
+    {
+      name: "order as a scalar instead of an object or null",
+      mutate: (r) => {
+        r["order"] = "yes";
+      },
+      detail: /order is not a JSON object/,
+    },
+  ];
+
+  for (const { name, mutate, detail } of CASES) {
+    it(`fails closed on ${name}`, async () => {
+      const dir = await mkdtemp(join(tmpdir(), "nexus-risk-admit-"));
+      const file = join(dir, "field-tampered.jsonl");
+      try {
+        await writeMutatedJournal(file, await passedRecords(), mutate);
+        await expect(new FileRiskEventStore(file).readAll()).rejects.toBeInstanceOf(
+          RiskJournalCorruptionError,
+        );
+        await expect(new FileRiskEventStore(file).readAll()).rejects.toThrow(detail);
+        await expect(recoverRiskState(new FileRiskEventStore(file))).rejects.toBeInstanceOf(
+          RiskRecoveryError,
+        );
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
+  }
+
+  it("admits every record a real engine writes (halt, pass, fail, resume)", async () => {
+    const store = new InMemoryRiskEventStore();
+    const engine = new RiskEngine({ store, limits: limits({ maxPositionNotional: 150_000 }) });
+    await engine.evaluate(mkOrder("BTC-PERP", "LONG", 1, 100_000), view(1_000_000), {}); // pass
+    await engine.evaluate(mkOrder("BTC-PERP", "LONG", 2, 100_000), view(1_000_000), {}); // fail (notional)
+    await engine.halt("drawdown breach", "DRAWDOWN_BREACH"); // breach + kill switch + halt
+    await engine.reset("operator reset"); // resume
+    const recs = await store.readAll();
+    expect(recs.length).toBeGreaterThanOrEqual(6);
+    for (const [i, rec] of recs.entries()) {
+      const roundTripped: unknown = JSON.parse(JSON.stringify(rec));
+      expect(() => assertValidRiskJournalRecord(roundTripped, `record ${i}`)).not.toThrow();
+    }
   });
 });

@@ -27,3 +27,23 @@ export function parseDecimal(s: string): number {
   const n = Number(s);
   return Number.isFinite(n) ? n : 0;
 }
+
+/** Compiled per-dp format checks (validation runs at boot/recovery frequency). */
+const CANONICAL_DECIMAL_RE = new Map<number, RegExp>();
+
+/**
+ * True iff `v` is a canonical fixed-point decimal string of exactly `dp`
+ * decimals — the one format every quantize* border emits (optional sign, at
+ * least one integer digit, exactly dp fraction digits). Admission boundaries
+ * use this BEFORE parseDecimal: parsing alone would silently coerce garbage
+ * ("abc", "1e3", "Infinity") to 0 instead of surfacing the malformed value.
+ */
+export function isCanonicalDecimalString(v: unknown, dp: number): v is string {
+  if (typeof v !== "string") return false;
+  let re = CANONICAL_DECIMAL_RE.get(dp);
+  if (re === undefined) {
+    re = new RegExp(`^-?\\d+\\.\\d{${dp}}$`);
+    CANONICAL_DECIMAL_RE.set(dp, re);
+  }
+  return re.test(v);
+}

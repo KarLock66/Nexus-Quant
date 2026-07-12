@@ -12,8 +12,13 @@
  * recovered run is byte-identical to the run that wrote the journal — no Phase 6
  * fold is re-implemented here, only replayed.
  *
- * Recovery is FAIL-CLOSED on two independent checks; either halts execution:
+ * Recovery is FAIL-CLOSED on three independent checks; any one halts execution:
  *
+ *   0. admission  — every journal record is structurally validated at read
+ *                   (event-store.ts assertValidMarketJournalRecord, Phase 11C
+ *                   Stage 2): a parseable-but-malformed record throws
+ *                   JournalCorruptionError BEFORE any fold consumes it, instead
+ *                   of crashing untyped or coercing silently.
  *   1. integrity  — the fold recomputed from the fills MUST equal the position /
  *                   account snapshots the journal recorded at commit time. A
  *                   mismatch means the log was tampered with or a record is

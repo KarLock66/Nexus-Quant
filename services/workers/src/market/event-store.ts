@@ -26,7 +26,13 @@
 
 import { appendFile, readFile } from "node:fs/promises";
 import type { ExecutionResult } from "../execution/types.js";
-import type { Account, OrderEvent, Position } from "./types.js";
+import {
+  NOTIONAL_DP,
+  PRICE_DP,
+  QTY_DP,
+  isCanonicalDecimalString,
+} from "./money.js";
+import type { Account, OrderEvent, OrderEventKind, Position } from "./types.js";
 
 /**
  * One durable record of a committed execution — the unit recovery replays. It
@@ -74,6 +80,142 @@ export class JournalCorruptionError extends Error {
   }
 }
 
+// ── Record admission (Phase 11C Stage 2) ──────────────────────────────────────
+//
+// The JSONL read path is the one place untyped data enters the market layer: a
+// parsed line used to be trusted via a bare `as MarketJournalRecord` cast, so a
+// parseable-but-malformed record could reach the recovery folds — crashing
+// untyped (orderEvents not an array), or worse, coercing silently (a damaged
+// result.status folds as "not FILLED"; a missing lineage.executionStrategyId
+// buckets exposure under "undefined", which reconciliation does NOT check).
+// `assertValidMarketJournalRecord` makes the cast provably safe: it validates,
+// STRUCTURALLY only, every field the recovery path consumes (fillsFrom, the
+// market/portfolio folds, verifyAgainstSnapshots) before the record is admitted.
+// Audit-only payloads (non-fill lifecycle fields, lineage beyond the consumed
+// strategy bucket) are container-checked only — admission never rejects a
+// record a real writer could produce, so well-formed journals replay unchanged.
+
+/** JSON columns must be plain objects here — never arrays, scalars, or null. */
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+function isNonEmptyString(v: unknown): v is string {
+  return typeof v === "string" && v.length > 0;
+}
+
+/** Runtime mirror of OrderEventKind; Record keys give compile-time drift protection. */
+const ORDER_EVENT_KIND_FLAGS: Record<OrderEventKind, true> = {
+  ORDER_REQUESTED: true,
+  ORDER_SUBMITTED: true,
+  ORDER_ACCEPTED: true,
+  ORDER_PARTIALLY_FILLED: true,
+  ORDER_FILLED: true,
+  ORDER_CANCELLED: true,
+  ORDER_REJECTED: true,
+};
+const ORDER_EVENT_KINDS: ReadonlySet<string> = new Set(Object.keys(ORDER_EVENT_KIND_FLAGS));
+
+/**
+ * Structural admission of one deserialized journal record. THROWS
+ * JournalCorruptionError (fail-closed: recovery halts execution, append refuses
+ * to extend a corrupt log) on the first malformed field. Well-formed records —
+ * the only kind the live stage writes — pass untouched, byte for byte.
+ */
+export function assertValidMarketJournalRecord(
+  v: unknown,
+  where: string,
+): asserts v is MarketJournalRecord {
+  // Explicitly annotated so TS control-flow treats a reject() call as terminal.
+  const reject: (detail: string) => never = (detail) => {
+    throw new JournalCorruptionError(`${where}: ${detail} (malformed record — fail-closed)`);
+  };
+
+  if (!isPlainObject(v)) reject("record is not a JSON object");
+  const seq = v["seq"];
+  if (typeof seq !== "number" || !Number.isInteger(seq) || seq < 0) {
+    reject("seq is not a non-negative integer");
+  }
+  if (!isNonEmptyString(v["intentId"])) reject("intentId missing or empty");
+  if (!isNonEmptyString(v["symbol"])) reject("symbol missing or empty");
+
+  // ORDER_* lifecycle: recovery lifts fills from it (fillsFrom), so fill events
+  // must carry sound identity, sign, and economics; other kinds are ignored by
+  // the folds and only need a recognizable kind.
+  const events = v["orderEvents"];
+  if (!Array.isArray(events)) reject("orderEvents is not an array");
+  for (let j = 0; j < events.length; j += 1) {
+    const e: unknown = events[j];
+    if (!isPlainObject(e)) reject(`orderEvents[${j}] is not a JSON object`);
+    const kind = e["kind"];
+    if (typeof kind !== "string" || !ORDER_EVENT_KINDS.has(kind)) {
+      reject(`orderEvents[${j}].kind "${String(kind)}" is not a known order event kind`);
+    }
+    if (kind === "ORDER_PARTIALLY_FILLED" || kind === "ORDER_FILLED") {
+      if (!isNonEmptyString(e["orderId"])) reject(`orderEvents[${j}].orderId missing or empty`);
+      if (!isNonEmptyString(e["intentId"])) reject(`orderEvents[${j}].intentId missing or empty`);
+      if (!isNonEmptyString(e["symbol"])) reject(`orderEvents[${j}].symbol missing or empty`);
+      if (e["side"] !== "BUY" && e["side"] !== "SELL") {
+        reject(`orderEvents[${j}].side "${String(e["side"])}" is not BUY|SELL`);
+      }
+      if (!isCanonicalDecimalString(e["fillQty"], QTY_DP)) {
+        reject(`orderEvents[${j}].fillQty is not a canonical ${QTY_DP}dp decimal string`);
+      }
+      if (!isCanonicalDecimalString(e["fillPrice"], PRICE_DP)) {
+        reject(`orderEvents[${j}].fillPrice is not a canonical ${PRICE_DP}dp decimal string`);
+      }
+      if (!isPlainObject(e["lineage"])) reject(`orderEvents[${j}].lineage is not a JSON object`);
+    }
+  }
+
+  // ExecutionResult: the portfolio fold consumes status/symbol/side/notional and
+  // buckets per-strategy exposure by lineage.executionStrategyId.
+  const result = v["result"];
+  if (!isPlainObject(result)) reject("result is not a JSON object");
+  if (result["status"] !== "FILLED" && result["status"] !== "REJECTED") {
+    reject(`result.status "${String(result["status"])}" is not FILLED|REJECTED`);
+  }
+  if (!isNonEmptyString(result["symbol"])) reject("result.symbol missing or empty");
+  if (result["side"] !== "LONG" && result["side"] !== "SHORT") {
+    reject(`result.side "${String(result["side"])}" is not LONG|SHORT`);
+  }
+  if (!isCanonicalDecimalString(result["filledNotional"], NOTIONAL_DP)) {
+    reject(`result.filledNotional is not a canonical ${NOTIONAL_DP}dp decimal string`);
+  }
+  const lineage = result["lineage"];
+  if (!isPlainObject(lineage)) reject("result.lineage is not a JSON object");
+  if (!isNonEmptyString(lineage["executionStrategyId"])) {
+    reject("result.lineage.executionStrategyId missing or empty");
+  }
+
+  // POSITION_UPDATED / ACCOUNT_UPDATED snapshots: the fail-closed integrity
+  // anchors recovery compares the recomputed folds against, field by field.
+  const position = v["position"];
+  if (!isPlainObject(position)) reject("position is not a JSON object");
+  if (!isNonEmptyString(position["symbol"])) reject("position.symbol missing or empty");
+  if (!isCanonicalDecimalString(position["netQty"], QTY_DP)) {
+    reject(`position.netQty is not a canonical ${QTY_DP}dp decimal string`);
+  }
+  if (!isCanonicalDecimalString(position["avgEntryPrice"], PRICE_DP)) {
+    reject(`position.avgEntryPrice is not a canonical ${PRICE_DP}dp decimal string`);
+  }
+  if (!isCanonicalDecimalString(position["realizedPnl"], NOTIONAL_DP)) {
+    reject(`position.realizedPnl is not a canonical ${NOTIONAL_DP}dp decimal string`);
+  }
+  if (!isCanonicalDecimalString(position["markPrice"], PRICE_DP)) {
+    reject(`position.markPrice is not a canonical ${PRICE_DP}dp decimal string`);
+  }
+
+  const account = v["account"];
+  if (!isPlainObject(account)) reject("account is not a JSON object");
+  if (!isCanonicalDecimalString(account["cashBalance"], NOTIONAL_DP)) {
+    reject(`account.cashBalance is not a canonical ${NOTIONAL_DP}dp decimal string`);
+  }
+  if (!isCanonicalDecimalString(account["realizedPnl"], NOTIONAL_DP)) {
+    reject(`account.realizedPnl is not a canonical ${NOTIONAL_DP}dp decimal string`);
+  }
+}
+
 /**
  * In-memory store — the deterministic default for tests and for runtime when no
  * durable path is configured. Durable across ticks within a process, NOT across a
@@ -100,11 +242,15 @@ export class InMemoryMarketEventStore implements MarketEventStore {
  * first touch so steady-state appends are O(1); `readAll` parses the whole file
  * (used at boot for recovery, infrequent).
  *
- * Fail-closed on read: a non-contiguous or out-of-order `seq` is genuine
- * corruption and throws (recovery then halts execution). A single unparseable
- * TRAILING line is tolerated as a torn write — because the store is written
- * journal-THEN-commit, a torn final line means that execution never committed
- * in-memory either, so discarding it keeps disk and memory consistent.
+ * Fail-closed on read: a non-contiguous or out-of-order `seq` — or any record
+ * that fails structural admission (assertValidMarketJournalRecord, Phase 11C
+ * Stage 2) — is genuine corruption and throws (recovery then halts execution).
+ * A single unparseable TRAILING line is tolerated as a torn write — because the
+ * store is written journal-THEN-commit, a torn final line means that execution
+ * never committed in-memory either, so discarding it keeps disk and memory
+ * consistent. Admission failures are NEVER torn-tolerated, even on the last
+ * line: truncating `JSON.stringify(record)` cannot yield parseable JSON of the
+ * wrong shape, so a malformed-but-parseable record is corruption, not a crash.
  */
 export class FileMarketEventStore implements MarketEventStore {
   private nextSeq: number | null = null;
@@ -134,9 +280,9 @@ export class FileMarketEventStore implements MarketEventStore {
       const line = lines[i]!.trim();
       if (line === "") continue;
       const isLastNonEmpty = lines.slice(i + 1).every((l) => l.trim() === "");
-      let parsed: MarketJournalRecord;
+      let parsed: unknown;
       try {
-        parsed = JSON.parse(line) as MarketJournalRecord;
+        parsed = JSON.parse(line);
       } catch (err) {
         // A torn final line is an incomplete (never-committed) append — tolerate it.
         if (isLastNonEmpty) break;
@@ -144,6 +290,11 @@ export class FileMarketEventStore implements MarketEventStore {
           `${this.path}: line ${i + 1} is not valid JSON (mid-file corruption): ${(err as Error).message}`,
         );
       }
+      // Admission boundary (Phase 11C Stage 2): the record must be structurally
+      // sound BEFORE it is trusted as a MarketJournalRecord — a malformed field
+      // throws here rather than crashing untyped or coercing silently inside
+      // the recovery folds. Never torn-tolerated (see the class doc).
+      assertValidMarketJournalRecord(parsed, `${this.path}: line ${i + 1}`);
       // Append-only invariant: seq must be contiguous from 0 in file order.
       if (parsed.seq !== records.length) {
         throw new JournalCorruptionError(

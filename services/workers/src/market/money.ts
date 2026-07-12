@@ -10,9 +10,14 @@
  * here reads a clock or randomness; every function is pure.
  */
 
-import { NOTIONAL_DP, parseDecimal, quantizeNotional } from "../execution/money.js";
+import {
+  NOTIONAL_DP,
+  isCanonicalDecimalString,
+  parseDecimal,
+  quantizeNotional,
+} from "../execution/money.js";
 
-export { NOTIONAL_DP, parseDecimal, quantizeNotional };
+export { NOTIONAL_DP, isCanonicalDecimalString, parseDecimal, quantizeNotional };
 
 /** Canonical precision for prices (matches the DB Decimal(20,8) for prices). */
 export const PRICE_DP = 8;

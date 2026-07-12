@@ -11,10 +11,23 @@
  * Nothing here reads a clock or randomness; every function is pure.
  */
 
-import { parseDecimal, quantizeNotional } from "../execution/money.js";
+import {
+  NOTIONAL_DP,
+  isCanonicalDecimalString,
+  parseDecimal,
+  quantizeNotional,
+} from "../execution/money.js";
 import { quantizePnl, quantizePrice, quantizeQty } from "../market/money.js";
 
-export { parseDecimal, quantizeNotional, quantizePnl, quantizePrice, quantizeQty };
+export {
+  NOTIONAL_DP,
+  isCanonicalDecimalString,
+  parseDecimal,
+  quantizeNotional,
+  quantizePnl,
+  quantizePrice,
+  quantizeQty,
+};
 
 /** Canonical precision for dimensionless ratios (leverage, utilization, drawdown). */
 export const RATIO_DP = 6;

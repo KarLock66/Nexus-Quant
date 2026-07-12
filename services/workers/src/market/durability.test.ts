@@ -32,6 +32,7 @@ import {
   FileMarketEventStore,
   InMemoryMarketEventStore,
   JournalCorruptionError,
+  assertValidMarketJournalRecord,
   type MarketEventStore,
   type MarketJournalInput,
   type MarketJournalRecord,
@@ -331,3 +332,115 @@ async function driveStoreless(): Promise<{ records: MarketJournalRecord[] }> {
   await driveDurable(store);
   return { records: await store.readAll() };
 }
+
+// ── Structural record admission (Phase 11C Stage 2) ────────────────────────────
+//
+// Every case writes a journal of REAL records with exactly one field tampered
+// into parseable-but-malformed JSON — the corruption class the JSON/seq checks
+// cannot see. Before Stage 2 these records were trusted via a bare cast: some
+// crashed recovery untyped (non-array orderEvents), others folded SILENTLY
+// (a damaged result.status coerces to "not FILLED"; a missing
+// lineage.executionStrategyId buckets exposure under "undefined", which
+// reconciliation does not check). Now every one is refused at admission with
+// the typed corruption error, so the worker halts execution fail-closed.
+
+describe("FileMarketEventStore — structural record admission (Phase 11C Stage 2)", () => {
+  /** Write real records as JSONL, tampering the LAST record via `mutate`. */
+  async function writeTamperedJournal(
+    file: string,
+    mutate: (rec: Record<string, any>) => void,
+  ): Promise<void> {
+    const recs = (await driveStoreless()).records;
+    expect(recs.length).toBeGreaterThan(1);
+    const lines = recs.map((r, i) => {
+      const obj = JSON.parse(JSON.stringify(r)) as Record<string, any>;
+      if (i === recs.length - 1) mutate(obj);
+      return JSON.stringify(obj);
+    });
+    await writeFile(file, `${lines.join("\n")}\n`);
+  }
+
+  const CASES: Array<{
+    name: string;
+    mutate: (r: Record<string, any>) => void;
+    detail: RegExp;
+  }> = [
+    {
+      name: "orderEvents replaced by a non-array (used to crash recovery untyped)",
+      mutate: (r) => {
+        r["orderEvents"] = {};
+      },
+      detail: /orderEvents is not an array/,
+    },
+    {
+      name: "unknown order event kind",
+      mutate: (r) => {
+        r["orderEvents"][0].kind = "ORDER_TELEPORTED";
+      },
+      detail: /not a known order event kind/,
+    },
+    {
+      name: "result.status outside FILLED|REJECTED (used to coerce silently to not-FILLED)",
+      mutate: (r) => {
+        r["result"].status = "FILED";
+      },
+      detail: /result\.status/,
+    },
+    {
+      name: "result.filledNotional not a canonical decimal (used to parseDecimal to 0)",
+      mutate: (r) => {
+        r["result"].filledNotional = "garbage";
+      },
+      detail: /filledNotional/,
+    },
+    {
+      name: 'missing result.lineage.executionStrategyId (used to bucket exposure under "undefined")',
+      mutate: (r) => {
+        delete r["result"].lineage.executionStrategyId;
+      },
+      detail: /executionStrategyId/,
+    },
+    {
+      name: "account.cashBalance as a number instead of a decimal string",
+      mutate: (r) => {
+        r["account"].cashBalance = 1_000_000;
+      },
+      detail: /cashBalance/,
+    },
+    {
+      name: "position.netQty in exponent form (parseable, non-canonical)",
+      mutate: (r) => {
+        r["position"].netQty = "1e8";
+      },
+      detail: /netQty/,
+    },
+  ];
+
+  for (const { name, mutate, detail } of CASES) {
+    it(`fails closed on ${name} — even on the last line (never torn-tolerated)`, async () => {
+      const dir = await mkdtemp(join(tmpdir(), "nexus-admit-"));
+      const file = join(dir, "tampered.jsonl");
+      try {
+        await writeTamperedJournal(file, mutate);
+        await expect(new FileMarketEventStore(file).readAll()).rejects.toBeInstanceOf(
+          JournalCorruptionError,
+        );
+        await expect(new FileMarketEventStore(file).readAll()).rejects.toThrow(detail);
+        // End to end: recovery surfaces the same refusal, so the worker leaves
+        // execution UNARMED instead of seeding the adapter from a corrupt log.
+        await expect(recoverMarketState(new FileMarketEventStore(file))).rejects.toThrow(detail);
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
+  }
+
+  it("admits every record a real run writes (round-trip byte-identical, nothing rejected)", async () => {
+    const recs = (await driveStoreless()).records;
+    expect(recs.length).toBeGreaterThan(0);
+    for (const [i, rec] of recs.entries()) {
+      const roundTripped: unknown = JSON.parse(JSON.stringify(rec));
+      expect(() => assertValidMarketJournalRecord(roundTripped, `record ${i}`)).not.toThrow();
+    }
+  });
+});

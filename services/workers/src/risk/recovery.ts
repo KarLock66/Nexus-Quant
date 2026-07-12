@@ -14,9 +14,13 @@
  * in-process state and NO automatic recovery (a halt stays halted until explicit reset).
  *
  * FAIL-CLOSED: a structurally corrupt journal makes the store's readAll throw
- * (RiskJournalCorruptionError); recovery surfaces it as a RiskRecoveryError so the
- * worker can engage the kill switch (JOURNAL_INTEGRITY_FAILURE) rather than arm trading
- * against a state it cannot prove.
+ * (RiskJournalCorruptionError) — including any parseable-but-malformed record caught
+ * by the per-record admission boundary (events.ts assertValidRiskJournalRecord,
+ * Phase 11C Stage 2: unknown event type, malformed capital snapshot, unknown
+ * trigger). Recovery surfaces it as a RiskRecoveryError so the worker can engage the
+ * kill switch (JOURNAL_INTEGRITY_FAILURE) rather than arm trading against a state it
+ * cannot prove — in particular, a damaged halt record now halts recovery instead of
+ * silently clearing the halt.
  */
 
 import type { RiskEventStore } from "./events.js";
