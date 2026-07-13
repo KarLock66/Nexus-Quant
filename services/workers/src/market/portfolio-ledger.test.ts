@@ -85,6 +85,17 @@ describe("PortfolioLedger — identity & restart recovery", () => {
     const arg = upsert.mock.calls[0]![0] as { create: { drawdown: string } };
     expect(arg.create.drawdown).toBe("0.1000");
   });
+
+  it("ignores a corrupt (non-finite) persisted peak and recovers from initialValue — never NaN (GAP C)", async () => {
+    const { prisma, upsert } = fakePrisma({ existing: { id: "pf-1" }, maxEquity: "garbage" });
+    const ledger = ledgerWith(prisma);
+    await ledger.init();
+    // Peak is initialValue (1M), NOT NaN: drawdown to 0.9M reads 0.1000, and a
+    // NaN peak would instead have silently zeroed every subsequent drawdown.
+    await ledger.record(valuation("900000.00", "0.00"), {}, new Date("2026-07-04T00:00:00Z"));
+    const arg = upsert.mock.calls[0]![0] as { create: { drawdown: string } };
+    expect(arg.create.drawdown).toBe("0.1000");
+  });
 });
 
 describe("PortfolioLedger — snapshot persistence (derived VERBATIM)", () => {

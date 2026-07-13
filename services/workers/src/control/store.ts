@@ -14,6 +14,7 @@ import type {
   ProtectionRuleId,
   RuntimeState,
 } from "@nexus/control";
+import { admitControlComponents, assertValidRuntimeState } from "./validate.js";
 
 const KILL_SWITCH_ID = "singleton";
 
@@ -59,7 +60,9 @@ export async function getCurrentState(): Promise<RuntimeState> {
     orderBy: { enteredAt: "desc" },
     select: { state: true },
   });
-  return (row?.state as RuntimeState | undefined) ?? "BOOTING";
+  if (!row) return "BOOTING"; // no transitions yet — first boot, not corruption
+  assertValidRuntimeState(row.state, "RuntimeStateTransition.state", "MALFORMED_RUNTIME_STATE");
+  return row.state;
 }
 
 export async function getLatestTransition(): Promise<{
@@ -71,11 +74,23 @@ export async function getLatestTransition(): Promise<{
 } | null> {
   const row = await prisma.runtimeStateTransition.findFirst({ orderBy: { enteredAt: "desc" } });
   if (!row) return null;
+  assertValidRuntimeState(row.state, "RuntimeStateTransition.state", "MALFORMED_STATE_TRANSITION");
+  if (row.previousState !== null) {
+    assertValidRuntimeState(
+      row.previousState,
+      "RuntimeStateTransition.previousState",
+      "MALFORMED_STATE_TRANSITION",
+    );
+  }
   return {
-    state: row.state as RuntimeState,
-    previousState: (row.previousState as RuntimeState | null) ?? null,
+    state: row.state,
+    previousState: row.previousState,
     reason: row.reason,
-    affectedComponents: (row.affectedComponents as ControlComponent[] | null) ?? [],
+    affectedComponents: admitControlComponents(
+      row.affectedComponents,
+      "RuntimeStateTransition.affectedComponents",
+      "MALFORMED_STATE_TRANSITION",
+    ),
     enteredAt: row.enteredAt.toISOString(),
   };
 }
@@ -172,7 +187,14 @@ export async function getActiveProtectionEvents(): Promise<
 export async function getOpenIncident(): Promise<{ id: string; affectedComponents: ControlComponent[] } | null> {
   const row = await prisma.incident.findFirst({ where: { status: "OPEN" }, orderBy: { startedAt: "desc" } });
   if (!row) return null;
-  return { id: row.id, affectedComponents: (row.affectedComponents as ControlComponent[] | null) ?? [] };
+  return {
+    id: row.id,
+    affectedComponents: admitControlComponents(
+      row.affectedComponents,
+      `Incident.affectedComponents (incident ${row.id})`,
+      "MALFORMED_INCIDENT",
+    ),
+  };
 }
 
 export async function openIncident(args: {

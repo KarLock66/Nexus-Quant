@@ -27,6 +27,7 @@ import {
 import { gatherControlInputs } from "./inputs.js";
 import { verifyRecovery } from "./recovery.js";
 import { validateStartup } from "./startup.js";
+import { ControlDataError } from "./validate.js";
 import {
   appendAudit,
   getCurrentState,
@@ -87,7 +88,14 @@ export class ControlPlane {
 
   /** Boot sequence + startup validation. Returns whether the runtime may arm execution. */
   async boot(): Promise<{ started: boolean; validation: StartupValidation }> {
-    const persisted = await getCurrentState().catch(() => "BOOTING" as RuntimeState);
+    const persisted = await getCurrentState().catch((err: unknown) => {
+      // Conservative fallback either way (boot still runs full startup validation);
+      // the read failure is LOGGED, never silently swallowed (Phase 11C Stage 3).
+      this.deps.log("error", "control plane: persisted runtime state unreadable — falling back to BOOTING", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return "BOOTING" as RuntimeState;
+    });
     await this.commitTransition("BOOTING", persisted === "BOOTING" ? null : persisted, "worker boot", []);
     await this.commitTransition("STARTING", "BOOTING", "running startup validation", []);
 
@@ -146,25 +154,44 @@ export class ControlPlane {
         prev = "RECOVERING";
         this.lastState = "RECOVERING";
       }
-      const open = await getOpenIncident();
-      const targets = uniq([...this.lastActiveComponents, ...(open?.affectedComponents ?? [])]);
-      if (targets.length === 0) {
-        recovery = true; // nothing specific to verify (e.g. clean restart)
-      } else {
-        const reports = await Promise.all(targets.map((c) => verifyRecovery(c, {
-          redisUrl: this.redisUrl,
-          quantUrl: this.quantUrl,
-          getRiskActive: this.deps.getRiskActive,
-          lastExecutionAt: this.lastExecutionAt,
-        })));
-        recovery = recoveryOutcome(reports);
+      let open: { id: string; affectedComponents: ControlComponent[] } | null = null;
+      let openReadable = true;
+      try {
+        open = await getOpenIncident();
+      } catch (err) {
+        if (!(err instanceof ControlDataError)) throw err;
+        openReadable = false;
+      }
+      if (!openReadable) {
+        // Fail-closed: an unreadable incident row makes recovery UNVERIFIABLE — this is
+        // the one site where corruption could otherwise UPGRADE state (→ HEALTHY).
+        recovery = false;
         await appendAudit({
           actor: "system:control",
-          action: recovery ? "RECOVERY_VERIFIED" : "RECOVERY_FAILED",
-          result: recovery ? "OK" : "FAILED",
-          reason: `verified ${targets.join(", ")}`,
-          metadata: { reports },
+          action: "RECOVERY_FAILED",
+          result: "FAILED",
+          reason: "open incident row corrupt — recovery unverifiable (fail-closed)",
         });
+      } else {
+        const targets = uniq([...this.lastActiveComponents, ...(open?.affectedComponents ?? [])]);
+        if (targets.length === 0) {
+          recovery = true; // nothing specific to verify (e.g. clean restart)
+        } else {
+          const reports = await Promise.all(targets.map((c) => verifyRecovery(c, {
+            redisUrl: this.redisUrl,
+            quantUrl: this.quantUrl,
+            getRiskActive: this.deps.getRiskActive,
+            lastExecutionAt: this.lastExecutionAt,
+          })));
+          recovery = recoveryOutcome(reports);
+          await appendAudit({
+            actor: "system:control",
+            action: recovery ? "RECOVERY_VERIFIED" : "RECOVERY_FAILED",
+            result: recovery ? "OK" : "FAILED",
+            reason: `verified ${targets.join(", ")}`,
+            metadata: { reports },
+          });
+        }
       }
     }
 
@@ -196,7 +223,17 @@ export class ControlPlane {
     active: ProtectionVerdict[],
   ): Promise<void> {
     if (next === "PROTECTED" && active.length > 0) {
-      let open = await getOpenIncident();
+      let open: { id: string; affectedComponents: ControlComponent[] } | null = null;
+      try {
+        open = await getOpenIncident();
+      } catch (err) {
+        if (!(err instanceof ControlDataError)) throw err;
+        // Corruption never blocks protection: treat as no readable open incident and
+        // open a FRESH valid one (newer startedAt — subsequent reads see the valid row).
+        this.deps.log("warn", "control plane: open incident row corrupt — opening a fresh incident", {
+          error: err.message,
+        });
+      }
       if (!open) {
         const type = active.length === 1 ? active[0]!.ruleId : "multi";
         const id = await openIncident({
@@ -227,7 +264,7 @@ export class ControlPlane {
 
     // Reaching HEALTHY after an incident → resolve it (recovery verified).
     if (next === "HEALTHY" && (prev === "RECOVERING" || prev === "PROTECTED")) {
-      const open = await getOpenIncident();
+      const open = await this.readOpenIncidentForResolution();
       if (open) {
         await resolveIncident(open.id, "VERIFIED");
         await appendAudit({
@@ -248,7 +285,7 @@ export class ControlPlane {
     // count returns to zero. (No active protections can hold here: deriveRuntimeState
     // would have returned PROTECTED, not HEALTHY/DEGRADED, if any were active.)
     if (prev === "STOPPED" && (next === "HEALTHY" || next === "DEGRADED")) {
-      const open = await getOpenIncident();
+      const open = await this.readOpenIncidentForResolution();
       if (open) {
         await resolveIncident(open.id, "MANUAL_RESUME");
         await appendAudit({
@@ -259,6 +296,26 @@ export class ControlPlane {
           metadata: { incidentId: open.id, outcome: "MANUAL_RESUME" },
         });
       }
+    }
+  }
+
+  /**
+   * getOpenIncident for the two RESOLUTION sites: a corrupt row skips resolution — the
+   * incident stays OPEN (operator-visible) and the state transition itself is untouched.
+   * Non-admission errors propagate unchanged (Phase 11C Stage 3).
+   */
+  private async readOpenIncidentForResolution(): Promise<{
+    id: string;
+    affectedComponents: ControlComponent[];
+  } | null> {
+    try {
+      return await getOpenIncident();
+    } catch (err) {
+      if (!(err instanceof ControlDataError)) throw err;
+      this.deps.log("error", "control plane: open incident row corrupt — resolution skipped, incident left OPEN", {
+        error: err.message,
+      });
+      return null;
     }
   }
 

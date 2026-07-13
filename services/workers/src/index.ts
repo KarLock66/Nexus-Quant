@@ -30,6 +30,7 @@ import {
 } from "./market/index.js";
 import {
   BUS_CHANNELS,
+  BusAdmissionError,
   createBullMqDecisionBus,
   createRedisDecisionBus,
   readBusBackend,
@@ -304,7 +305,16 @@ async function buildDecisionBus(): Promise<EventBus> {
   if (backend === "redis") {
     const { Redis } = await import("ioredis");
     const publisher = new Redis(redisUrl) as unknown as RedisLike;
-    const distributed = createRedisDecisionBus(publisher);
+    const distributed = createRedisDecisionBus(publisher, {
+      // Phase 11C Stage 3: a malformed wire message is logged and DROPPED
+      // (skip-not-halt) — the subscription keeps consuming valid events.
+      onReject: (detail, channel) =>
+        log("error", "decision bus event rejected (malformed — dropped)", {
+          channel,
+          detail,
+          category: "INFRA",
+        }),
+    });
     distributed.subscribe(persist);
     log("info", "Phase 7 distributed bus enabled", { backend: "redis (pub/sub)" });
     return distributed;
@@ -314,7 +324,7 @@ async function buildDecisionBus(): Promise<EventBus> {
   // the options are cast to each constructor's own parameter type to bypass a
   // cross-version ioredis type mismatch (bullmq bundles its own ioredis copy). The
   // runtime values are exactly what BullMQ expects — this path is opt-in infra.
-  const { Queue, Worker } = await import("bullmq");
+  const { Queue, Worker, UnrecoverableError } = await import("bullmq");
   const { Redis } = await import("ioredis");
   const connection = new Redis(redisUrl, { maxRetriesPerRequest: null });
   const queue = new Queue(
@@ -325,7 +335,20 @@ async function buildDecisionBus(): Promise<EventBus> {
     new Worker(
       BUS_CHANNELS.decision,
       async (job) => {
-        await process(job.data as DecisionEvent);
+        try {
+          // The cast is type-level only: the bus runs admitDecisionEvent on the
+          // raw job data before any handler sees it (Phase 11C Stage 3).
+          await process(job.data as DecisionEvent);
+        } catch (err) {
+          // A malformed payload can never succeed on retry — send it straight to
+          // the failed set (payload retained for forensics) so one poison job
+          // cannot wedge the queue. Transient handler failures rethrow plainly
+          // and keep at-least-once retry semantics.
+          if (err instanceof BusAdmissionError) {
+            throw new UnrecoverableError(err.message);
+          }
+          throw err;
+        }
       },
       { connection } as unknown as ConstructorParameters<typeof Worker>[2],
     );

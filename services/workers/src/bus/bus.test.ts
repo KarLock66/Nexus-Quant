@@ -11,7 +11,10 @@
 import { describe, expect, it } from "vitest";
 import type { EventBus } from "../execution/bus.js";
 import type { ExecutionBus } from "../execution/execution-bus.js";
+import type { DecisionEvent } from "../execution/types.js";
 import type { MarketBus } from "../market/market-bus.js";
+import { BusAdmissionError } from "./admission.js";
+import { BUS_CHANNELS } from "./types.js";
 import {
   BullMqBus,
   type QueueLike,
@@ -72,6 +75,8 @@ class FakeRedis implements RedisLike {
 class FakeQueue<E> implements QueueLike<E> {
   pending: E[] = [];
   readonly failed: E[] = [];
+  /** The error each failed job threw (pins un-wrapped vs wrapped propagation). */
+  readonly failures: unknown[] = [];
   private processor: ((data: E) => Promise<void>) | null = null;
 
   async add(_name: string, data: E): Promise<void> {
@@ -89,9 +94,10 @@ class FakeQueue<E> implements QueueLike<E> {
     for (const data of batch) {
       try {
         await this.processor(data);
-      } catch {
+      } catch (err) {
         // A throwing handler does NOT ack — real BullMQ would retry. Record it.
         this.failed.push(data);
+        this.failures.push(err);
       }
     }
   }
@@ -231,5 +237,125 @@ describe("BullMqBus — durable enqueue, at-least-once delivery, fan-out", () =>
     const decision: EventBus = createBullMqDecisionBus(queue, workerFactory);
     expect(typeof decision.publish).toBe("function");
     expect(typeof decision.subscribe).toBe("function");
+  });
+});
+
+// ── Decision-bus admission (Phase 11C Stage 3) ─────────────────────────────────
+
+function validDecisionEvent(): DecisionEvent {
+  return {
+    signal: {
+      symbol: "BTC-PERP",
+      side: "LONG",
+      decision: "LONG",
+      confidence: "0.9500",
+      strategyVersionId: "sv-1",
+      strategyParams: { rsiLongMin: 55, rsiShortMax: 45, maxRealizedVol: 0.02 },
+      featureSnapshotId: "fs-1",
+      dqReportId: "dq-1",
+      datasetHash: "dataset-hash-1",
+      featureHash: "feature-hash-1",
+    },
+    decision: {
+      action: "ENTER",
+      side: "LONG",
+      confidence: "0.9500",
+      rationale: "confirmed directional edge",
+    },
+    execution: { status: "PENDING", detail: "execution hook reserved" },
+    lineage: {
+      tickId: "tick-1",
+      strategyVersionId: "sv-1",
+      featureSnapshotId: "fs-1",
+      dqReportId: "dq-1",
+      datasetHash: "dataset-hash-1",
+      featureHash: "feature-hash-1",
+      executionStrategyId: "core-technical",
+      executionStrategyVersion: 1,
+    },
+  };
+}
+
+describe("RedisChannelBus — decision-channel admission (reject, drop, keep consuming)", () => {
+  it("routes non-JSON bytes and wrong-shape JSON to onReject, never to a handler, and still delivers the next valid event", async () => {
+    const hub = new FakeRedisHub();
+    const rejected: string[] = [];
+    const bus = createRedisDecisionBus(new FakeRedis(hub), {
+      onReject: (detail) => void rejected.push(detail),
+    });
+    const got: DecisionEvent[] = [];
+    bus.subscribe((e) => void got.push(e));
+
+    // Raw bytes straight onto the channel — what any process with Redis access
+    // can do. Pre-Stage-3 this threw from inside the message listener (crash).
+    hub.publish(BUS_CHANNELS.decision, "not json {{{");
+    // Valid JSON, wrong shape — pre-Stage-3 this was dispatched as trusted E
+    // (the silent-corruption case).
+    hub.publish(
+      BUS_CHANNELS.decision,
+      JSON.stringify({ signal: { confidence: "garbage" } }),
+    );
+
+    const valid = validDecisionEvent();
+    await bus.publish(valid);
+    await flush();
+
+    expect(rejected.length).toBe(2);
+    expect(rejected[0]).toContain("not valid JSON");
+    expect(rejected[1]).toContain("decision bus event rejected");
+    expect(got).toEqual([valid]); // skip-not-halt: rejections never stop the stream
+  });
+
+  it("admission failure does NOT invoke onError (handler-failure semantics preserved)", async () => {
+    const hub = new FakeRedisHub();
+    const errors: unknown[] = [];
+    const rejected: string[] = [];
+    const bus = createRedisDecisionBus(new FakeRedis(hub), {
+      onError: (err) => void errors.push(err),
+      onReject: (detail) => void rejected.push(detail),
+    });
+    bus.subscribe(() => undefined);
+
+    hub.publish(BUS_CHANNELS.decision, JSON.stringify({ forged: true }));
+    await flush();
+
+    expect(rejected.length).toBe(1);
+    expect(errors.length).toBe(0);
+  });
+});
+
+describe("BullMqBus — decision-queue admission (poison pill to failed set, queue drains)", () => {
+  it("fails a malformed job with an UN-WRAPPED BusAdmissionError and still processes the next valid job", async () => {
+    const { queue, workerFactory } = bullPair<DecisionEvent>();
+    const bus = createBullMqDecisionBus(queue, workerFactory);
+    const got: DecisionEvent[] = [];
+    bus.subscribe((e) => void got.push(e));
+
+    // Models a corrupted/legacy/injected durable queue entry. Pre-Stage-3 this
+    // reached Prisma.Decimal("garbage") in the persistence sink -> infinite retry.
+    const poison = { signal: { confidence: "garbage" } } as unknown as DecisionEvent;
+    await bus.publish(poison);
+    const valid = validDecisionEvent();
+    await bus.publish(valid);
+    await flush();
+
+    expect(queue.failed).toEqual([poison]); // payload retained for forensics
+    expect(queue.failures[0]).toBeInstanceOf(BusAdmissionError); // un-wrapped: caller can translate to UnrecoverableError
+    expect(got).toEqual([valid]); // the poison pill did not block the queue
+  });
+
+  it("a transient handler failure on a VALID job still surfaces wrapped (retry semantics unchanged)", async () => {
+    const { queue, workerFactory } = bullPair<DecisionEvent>();
+    const bus = createBullMqDecisionBus(queue, workerFactory);
+    bus.subscribe(() => {
+      throw new Error("db down");
+    });
+
+    await bus.publish(validDecisionEvent());
+    await flush();
+
+    expect(queue.failed.length).toBe(1);
+    expect(queue.failures[0]).not.toBeInstanceOf(BusAdmissionError);
+    expect((queue.failures[0] as Error).message).toContain("bullmq bus handler failed");
   });
 });

@@ -12,5 +12,6 @@
  */
 
 export * from "./types.js";
+export * from "./admission.js";
 export * from "./redis-bus.js";
 export * from "./bullmq-bus.js";

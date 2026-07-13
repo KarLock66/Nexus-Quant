@@ -19,7 +19,8 @@
  * so the bridge is unit-testable against an in-memory fake with no live Redis.
  */
 
-import { errMsg } from "../lib/log.js";
+import { errMsg, log } from "../lib/log.js";
+import { admitDecisionEvent } from "./admission.js";
 import { BUS_CHANNELS, type PubSubBus } from "./types.js";
 import type {
   DecisionEvent,
@@ -42,9 +43,22 @@ export interface RedisLike {
   duplicate(): RedisLike;
 }
 
-export interface RedisChannelBusOptions {
+export interface RedisChannelBusOptions<E = unknown> {
   /** Invoked when a handler throws during dispatch (no producer to fail-close to). */
   onError?: (err: unknown, channel: string) => void;
+  /**
+   * Admission codec (Phase 11C Stage 3): runs on the raw JSON.parse result
+   * (as `unknown`) BEFORE dispatch; returns the trusted event or throws. Absent,
+   * the parsed value is dispatched as-is (in-type trust — test bridges only; the
+   * decision factory below always bakes one in).
+   */
+  admit?: (v: unknown) => E;
+  /**
+   * Invoked when a message fails JSON parsing or admission. Default: log + DROP,
+   * keep consuming (skip-not-halt — at-most-once broadcast has nothing to retry
+   * on, and throwing from the ioredis message listener would crash the process).
+   */
+  onReject?: (detail: string, channel: string) => void;
 }
 
 /**
@@ -56,17 +70,28 @@ export class RedisChannelBus<E> implements PubSubBus<E> {
   private readonly handlers = new Set<(event: E) => Promise<void> | void>();
   private subscriber: RedisLike | null = null;
   private readonly onError: (err: unknown, channel: string) => void;
+  private readonly admit: (v: unknown) => E;
+  private readonly onReject: (detail: string, channel: string) => void;
 
   constructor(
     private readonly publisher: RedisLike,
     private readonly channel: string,
-    options: RedisChannelBusOptions = {},
+    options: RedisChannelBusOptions<E> = {},
   ) {
     this.onError =
       options.onError ??
       ((err, channel) => {
         // No producer to propagate to across the boundary — surface, never swallow.
         throw new Error(`redis bus handler failed on ${channel}: ${errMsg(err)}`);
+      });
+    this.admit = options.admit ?? ((v) => v as E);
+    this.onReject =
+      options.onReject ??
+      ((detail, channel) => {
+        log("error", "redis bus message rejected (malformed — dropped)", {
+          channel,
+          detail,
+        });
       });
   }
 
@@ -87,11 +112,21 @@ export class RedisChannelBus<E> implements PubSubBus<E> {
     const sub = this.publisher.duplicate();
     sub.on("message", (channel, message) => {
       if (channel !== this.channel) return;
+      // Trust boundary: `message` is bytes any Redis client can have published.
+      // Parse and admission failures REJECT (log + drop, keep consuming) — they
+      // never reach onError, which would throw inside this ioredis listener.
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(message);
+      } catch (err) {
+        this.onReject(`message is not valid JSON: ${errMsg(err)}`, channel);
+        return;
+      }
       let event: E;
       try {
-        event = JSON.parse(message) as E;
+        event = this.admit(parsed);
       } catch (err) {
-        this.onError(err, channel);
+        this.onReject(errMsg(err), channel);
         return;
       }
       void this.dispatch(event);
@@ -114,18 +149,27 @@ export class RedisChannelBus<E> implements PubSubBus<E> {
 
 // ── Typed factories — each returns the matching sealed bus interface by structure ──
 
-/** A Redis-backed decision bus (satisfies execution/bus.ts `EventBus`). */
+/**
+ * A Redis-backed decision bus (satisfies execution/bus.ts `EventBus`). Admission
+ * is BAKED IN (Phase 11C Stage 3): every delivered message passes
+ * admitDecisionEvent before any handler runs — callers may add onReject/onError
+ * but cannot remove admission (only the decision channel is distributed in
+ * production, so this is the one factory that must never trust the wire).
+ */
 export function createRedisDecisionBus(
   publisher: RedisLike,
-  options?: RedisChannelBusOptions,
+  options?: RedisChannelBusOptions<DecisionEvent>,
 ): PubSubBus<DecisionEvent> {
-  return new RedisChannelBus<DecisionEvent>(publisher, BUS_CHANNELS.decision, options);
+  return new RedisChannelBus<DecisionEvent>(publisher, BUS_CHANNELS.decision, {
+    ...options,
+    admit: admitDecisionEvent,
+  });
 }
 
 /** A Redis-backed execution bus (satisfies execution/execution-bus.ts `ExecutionBus`). */
 export function createRedisExecutionBus(
   publisher: RedisLike,
-  options?: RedisChannelBusOptions,
+  options?: RedisChannelBusOptions<ExecutionStageEvent>,
 ): PubSubBus<ExecutionStageEvent> {
   return new RedisChannelBus<ExecutionStageEvent>(
     publisher,
@@ -137,7 +181,7 @@ export function createRedisExecutionBus(
 /** A Redis-backed market bus (satisfies market/market-bus.ts `MarketBus`). */
 export function createRedisMarketBus(
   publisher: RedisLike,
-  options?: RedisChannelBusOptions,
+  options?: RedisChannelBusOptions<MarketStageEvent>,
 ): PubSubBus<MarketStageEvent> {
   return new RedisChannelBus<MarketStageEvent>(publisher, BUS_CHANNELS.market, options);
 }

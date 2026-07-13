@@ -114,14 +114,22 @@ export class DbQuoteTransport implements RealtimeQuoteTransport {
       orderBy: { ts: "desc" },
     });
     if (tick !== null && fresh(tick.ts)) {
-      return { symbol, ts: tick.ts.toISOString(), price: quantizePrice(Number(tick.price)) };
+      // Same finite-positive admission as the orderbook branch (Phase 11C GAP C):
+      // a corrupt/zero Decimal is never a mark — fall through to the next source.
+      const price = Number(tick.price);
+      if (Number.isFinite(price) && price > 0) {
+        return { symbol, ts: tick.ts.toISOString(), price: quantizePrice(price) };
+      }
     }
     const candle = await this.prisma.marketCandle.findFirst({
       where: { symbol, ...this.venueFilter },
       orderBy: { ts: "desc" },
     });
     if (candle !== null && fresh(candle.ts)) {
-      return { symbol, ts: candle.ts.toISOString(), price: quantizePrice(Number(candle.close)) };
+      const close = Number(candle.close);
+      if (Number.isFinite(close) && close > 0) {
+        return { symbol, ts: candle.ts.toISOString(), price: quantizePrice(close) };
+      }
     }
     return null;
   }

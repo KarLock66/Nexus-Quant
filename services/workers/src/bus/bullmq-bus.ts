@@ -16,6 +16,7 @@
  */
 
 import { errMsg } from "../lib/log.js";
+import { admitDecisionEvent } from "./admission.js";
 import { BUS_CHANNELS, type PubSubBus } from "./types.js";
 import type {
   DecisionEvent,
@@ -54,6 +55,14 @@ export class BullMqBus<E> implements PubSubBus<E> {
     private readonly queue: QueueLike<E>,
     private readonly jobName: string,
     private readonly workerFactory: WorkerFactory<E>,
+    /**
+     * Admission codec (Phase 11C Stage 3): runs on the raw job data (as
+     * `unknown`) BEFORE the handler loop; its throw propagates UN-WRAPPED so the
+     * processor owner can distinguish a malformed payload (unrecoverable — dead-
+     * letter, never retry) from a transient handler failure (retryable). Absent,
+     * job data is dispatched as-is (in-type trust — test bridges only).
+     */
+    private readonly admit?: (v: unknown) => E,
   ) {}
 
   subscribe(handler: (event: E) => Promise<void> | void): () => void {
@@ -82,10 +91,14 @@ export class BullMqBus<E> implements PubSubBus<E> {
   private ensureWorker(): void {
     if (this.worker !== null) return;
     this.worker = this.workerFactory(async (data: E) => {
+      // Trust boundary: job data is whatever was durably enqueued (any process
+      // with Redis access, or a legacy/corrupt entry). Admission runs BEFORE the
+      // handler loop and its throw propagates un-wrapped (see constructor).
+      const event = this.admit === undefined ? data : this.admit(data);
       // Run every handler; let a throw propagate so the job is retried (durable).
       for (const handler of this.handlers) {
         try {
-          await handler(data);
+          await handler(event);
         } catch (err) {
           throw new Error(`bullmq bus handler failed on ${this.jobName}: ${errMsg(err)}`);
         }
@@ -96,12 +109,22 @@ export class BullMqBus<E> implements PubSubBus<E> {
 
 // ── Typed factories — each returns the matching sealed bus interface by structure ──
 
-/** A BullMQ-backed decision bus (satisfies execution/bus.ts `EventBus`). */
+/**
+ * A BullMQ-backed decision bus (satisfies execution/bus.ts `EventBus`). Admission
+ * is BAKED IN (Phase 11C Stage 3): every consumed job passes admitDecisionEvent
+ * before any handler runs; a malformed payload throws BusAdmissionError out of
+ * the processor for the caller to translate (e.g. bullmq UnrecoverableError).
+ */
 export function createBullMqDecisionBus(
   queue: QueueLike<DecisionEvent>,
   workerFactory: WorkerFactory<DecisionEvent>,
 ): PubSubBus<DecisionEvent> {
-  return new BullMqBus<DecisionEvent>(queue, BUS_CHANNELS.decision, workerFactory);
+  return new BullMqBus<DecisionEvent>(
+    queue,
+    BUS_CHANNELS.decision,
+    workerFactory,
+    admitDecisionEvent,
+  );
 }
 
 /** A BullMQ-backed execution bus (satisfies execution/execution-bus.ts `ExecutionBus`). */

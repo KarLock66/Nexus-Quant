@@ -159,7 +159,26 @@ async function main(): Promise<void> {
       let delivered = false;
       rbus.subscribe(() => { delivered = true; });
       await sleep(300);
-      await rbus.publish({ signal: {}, decision: {}, execution: null, lineage: {} } as unknown as DecisionEvent);
+      // Phase 11C Stage 3: the decision bus now ADMITS every wire message, so the
+      // round-trip probe must be a structurally valid DecisionEvent (a stub would
+      // be rejected and dropped — which is the sealed behavior, not a bug).
+      const probe: DecisionEvent = {
+        signal: {
+          symbol: "BTC-PERP", side: "FLAT", decision: "FLAT", confidence: "0.0000",
+          strategyVersionId: LINEAGE.strategyVersionId,
+          strategyParams: { rsiLongMin: 55, rsiShortMax: 45, maxRealizedVol: 0.02 },
+          featureSnapshotId: LINEAGE.featureSnapshotId, dqReportId: LINEAGE.dqReportId,
+          datasetHash: LINEAGE.datasetHash, featureHash: LINEAGE.featureHash,
+        },
+        decision: { action: "STAND_ASIDE", side: "FLAT", confidence: "0.0000", rationale: "seal8 STEP A wire round-trip probe" },
+        execution: { status: "SKIPPED", detail: "intent STAND_ASIDE — nothing to execute" },
+        lineage: {
+          strategyVersionId: LINEAGE.strategyVersionId, featureSnapshotId: LINEAGE.featureSnapshotId,
+          dqReportId: LINEAGE.dqReportId, datasetHash: LINEAGE.datasetHash, featureHash: LINEAGE.featureHash,
+          executionStrategyId: LINEAGE.executionStrategyId, executionStrategyVersion: LINEAGE.executionStrategyVersion,
+        },
+      };
+      await rbus.publish(probe);
       await waitFor("redis bus delivery", async () => delivered, { timeoutMs: 4000, intervalMs: 100 });
       pub.disconnect();
       assert(delivered, "redis decision-bus round-trip did not deliver");

@@ -57,6 +57,30 @@ describe("DbQuoteTransport freshness (fail-closed on disconnect)", () => {
     expect(t.latest("BTC-PERP")).toBeNull();
   });
 
+  it("falls through to the candle when the tick price is corrupt (non-finite Decimal)", async () => {
+    const tick = { ts: new Date(), price: "garbage" };
+    const candle = { ts: new Date(), close: "30500" };
+    const t = new DbQuoteTransport(prismaWith(null, tick, candle), { symbols: ["BTC-PERP"] });
+    await t.refresh();
+    expect(t.latest("BTC-PERP")?.price).toBe("30500.00000000");
+  });
+
+  it("falls through to the candle when the tick price is zero (not a usable mark)", async () => {
+    const tick = { ts: new Date(), price: "0" };
+    const candle = { ts: new Date(), close: "30500" };
+    const t = new DbQuoteTransport(prismaWith(null, tick, candle), { symbols: ["BTC-PERP"] });
+    await t.refresh();
+    expect(t.latest("BTC-PERP")?.price).toBe("30500.00000000");
+  });
+
+  it("returns null when every source is corrupt (no mark is ever fabricated)", async () => {
+    const tick = { ts: new Date(), price: "garbage" };
+    const candle = { ts: new Date(), close: "0" };
+    const t = new DbQuoteTransport(prismaWith(null, tick, candle), { symbols: ["BTC-PERP"] });
+    await t.refresh();
+    expect(t.latest("BTC-PERP")).toBeNull();
+  });
+
   it("EXCLUDES the legacy synthetic DEMO venue from every mark query, unconditionally", async () => {
     const prisma = prismaWith(null);
     const t = new DbQuoteTransport(prisma, { symbols: ["BTC-PERP"] });

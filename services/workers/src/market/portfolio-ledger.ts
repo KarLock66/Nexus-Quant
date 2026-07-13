@@ -81,7 +81,16 @@ export class PortfolioLedger {
       where: { portfolioId: portfolio.id },
       _max: { equity: true },
     });
-    const recoveredPeak = peak._max.equity !== null ? Number(peak._max.equity) : 0;
+    const rawPeak = peak._max.equity !== null ? Number(peak._max.equity) : 0;
+    // Finite guard (Phase 11C GAP C): a corrupt persisted Decimal would otherwise
+    // poison the running peak (NaN survives Math.max). An unusable aggregate is
+    // LOGGED and treated as absent — initialValue wins below, nothing repaired.
+    if (!Number.isFinite(rawPeak)) {
+      this.log("error", "portfolio ledger: persisted peak equity is not finite — ignoring persisted series peak, recovering from initialValue", {
+        portfolioId: portfolio.id,
+      });
+    }
+    const recoveredPeak = Number.isFinite(rawPeak) ? rawPeak : 0;
     this.peakEquity = Math.max(recoveredPeak, this.initialValue);
 
     this.log("info", "portfolio ledger initialized (persistent equity series)", {

@@ -35,8 +35,12 @@ function isNonEmptyString(v: unknown): v is string {
   return typeof v === "string" && v.length > 0;
 }
 
-/** The exact quantized-confidence wire format (decision.ts quantizeConfidence). */
-const CONFIDENCE_RE = /^[01]\.\d{4}$/;
+/**
+ * The exact quantized-confidence wire format (decision.ts quantizeConfidence).
+ * Exported (Phase 11C Stage 3) so bus admission checks the SAME format — one
+ * source for the wire contract, no drift.
+ */
+export const CONFIDENCE_RE = /^[01]\.\d{4}$/;
 
 const DECISION_SET: ReadonlySet<string> = new Set(SIGNAL_DECISIONS);
 
@@ -154,5 +158,45 @@ export function malformedSignalReason(
   if (signal.datasetHash !== ctx.dqReport.datasetHash) {
     return "datasetHash not carried verbatim from the DQ report";
   }
+  return null;
+}
+
+/**
+ * Phase 11C Stage 3 — CONTEXT-FREE structural check of the GeneratedSignal
+ * contract, for admission at a process boundary (the distributed decision bus)
+ * where the value is untrusted `unknown` and no snapshot/DQ/version context
+ * exists. Same enum domain and confidence wire format as malformedSignalReason
+ * above (shared DECISION_SET / CONFIDENCE_RE — one source each); the ctx
+ * cross-checks that ARE possible at the bus edge (lineage <-> signal) live in
+ * bus/admission.ts. Returns a reason string when malformed, null when sound.
+ * The context-bound malformedSignalReason is unchanged (Stage 1 sealed).
+ */
+export function malformedSignalStructureReason(v: unknown): string | null {
+  if (!isPlainObject(v)) return "is not a JSON object";
+  if (!isNonEmptyString(v["symbol"])) return "symbol missing or empty";
+  const side = v["side"];
+  if (typeof side !== "string" || !DECISION_SET.has(side)) {
+    return `side "${String(side)}" not in ${[...DECISION_SET].join("|")}`;
+  }
+  const decision = v["decision"];
+  if (typeof decision !== "string" || !DECISION_SET.has(decision)) {
+    return `decision "${String(decision)}" not in ${[...DECISION_SET].join("|")}`;
+  }
+  const confidence = v["confidence"];
+  if (typeof confidence !== "string" || !CONFIDENCE_RE.test(confidence)) {
+    return `confidence "${String(confidence)}" is not the quantized 4-decimal string format`;
+  }
+  const c = Number(confidence);
+  if (!(c >= 0 && c <= 1)) return `confidence ${confidence} outside [0, 1]`;
+  for (const field of [
+    "strategyVersionId",
+    "featureSnapshotId",
+    "dqReportId",
+    "datasetHash",
+    "featureHash",
+  ] as const) {
+    if (!isNonEmptyString(v[field])) return `${field} missing or empty`;
+  }
+  if (!isPlainObject(v["strategyParams"])) return "strategyParams is not a JSON object";
   return null;
 }
