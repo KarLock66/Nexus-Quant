@@ -1,6 +1,7 @@
 # Phase 11C — Stage 3 GAP C Implementation Report: DB-Decimal Finiteness Guards
 
 Status: COMPLETE — implemented, tested, NOT committed (per repo convention)
+> **Historical record.** Phase 11C is COMPLETE and RATIFIED (2026-07-14, committed as `713d9bf`) — see [PHASE11C_FINAL_ACCEPTANCE.md](PHASE11C_FINAL_ACCEPTANCE.md). Future hardening: [PHASE12_CHARTER.md](PHASE12_CHARTER.md).
 Date: 2026-07-13
 Scope executed: **GAP C only**, per the approved
 `AI_OS/PHASE11C_STAGE3_FINAL_AUDIT.md` recommendation — the planned

@@ -1,6 +1,7 @@
 # Phase 11C — Stage 3 Batch 2 Implementation Plan: Control-Plane Store Admission (GAP B)
 
 Status: PLANNING — awaiting approval, no source code touched
+> **Historical record.** Phase 11C is COMPLETE and RATIFIED (2026-07-14, committed as `713d9bf`) — see [PHASE11C_FINAL_ACCEPTANCE.md](PHASE11C_FINAL_ACCEPTANCE.md). Future hardening: [PHASE12_CHARTER.md](PHASE12_CHARTER.md).
 Date: 2026-07-13
 Scope: **GAP B only** from `AI_OS/PHASE11C_STAGE3_PLAN.md` (§2).
 Baseline: Batch 1 (GAP A — distributed decision-bus admission) is complete, validated, and sealed. This plan does not touch any Batch 1 file's behavior, any Stage 1/2 validator, or any file outside the list in §5.

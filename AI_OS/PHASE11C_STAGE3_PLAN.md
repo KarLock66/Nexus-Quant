@@ -1,6 +1,7 @@
 # Phase 11C — Stage 3 Plan: Distributed Bus & Control-Plane Admission
 
 Status: PLANNING (no code in this stage's planning pass)
+> **Historical record.** Phase 11C is COMPLETE and RATIFIED (2026-07-14, committed as `713d9bf`) — see [PHASE11C_FINAL_ACCEPTANCE.md](PHASE11C_FINAL_ACCEPTANCE.md). Future hardening: [PHASE12_CHARTER.md](PHASE12_CHARTER.md).
 Date: 2026-07-12
 Prereqs: Stage 1 (f468b9b — pipeline admission), Stage 2 (a2182f9 — journal recovery admission)
 Verdict: **Stage 3 is required.** Two unguarded trust boundaries remain in the production worker runtime.

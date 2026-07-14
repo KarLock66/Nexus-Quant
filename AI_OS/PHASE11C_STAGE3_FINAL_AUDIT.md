@@ -1,6 +1,7 @@
 # Phase 11C — Stage 3 Final Audit: Remaining Production Trust Boundaries
 
 Status: READ-ONLY AUDIT COMPLETE — no source modified, no patches, nothing committed
+> **Historical record.** Phase 11C is COMPLETE and RATIFIED (2026-07-14, committed as `713d9bf`) — see [PHASE11C_FINAL_ACCEPTANCE.md](PHASE11C_FINAL_ACCEPTANCE.md). Future hardening: [PHASE12_CHARTER.md](PHASE12_CHARTER.md).
 Date: 2026-07-13
 Baseline: Batch 1 (GAP A, distributed decision-bus admission) + Batch 2 (GAP B,
 control-plane store admission), both accepted, both present uncommitted in the

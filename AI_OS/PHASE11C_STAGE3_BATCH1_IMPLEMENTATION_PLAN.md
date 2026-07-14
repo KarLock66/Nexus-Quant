@@ -1,6 +1,7 @@
 # Phase 11C — Stage 3 Batch 1 Implementation Plan: Distributed Decision-Bus Admission
 
 Status: AWAITING APPROVAL (no code changed in this pass)
+> **Historical record.** Phase 11C is COMPLETE and RATIFIED (2026-07-14, committed as `713d9bf`) — see [PHASE11C_FINAL_ACCEPTANCE.md](PHASE11C_FINAL_ACCEPTANCE.md). Future hardening: [PHASE12_CHARTER.md](PHASE12_CHARTER.md).
 Date: 2026-07-12
 Scope: **GAP A only** (Stage 3 Plan §2) — Redis pub/sub + BullMQ decision-bus admission.
 Out of scope for this batch: GAP B (control store), GAP C (db-quote guards) — later batches.

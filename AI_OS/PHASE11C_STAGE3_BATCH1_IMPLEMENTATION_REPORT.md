@@ -1,6 +1,7 @@
 # Phase 11C — Stage 3 Batch 1 Implementation Report: Distributed Decision-Bus Admission
 
 Status: COMPLETE — implemented, tested, NOT committed (per instruction)
+> **Historical record.** Phase 11C is COMPLETE and RATIFIED (2026-07-14, committed as `713d9bf`) — see [PHASE11C_FINAL_ACCEPTANCE.md](PHASE11C_FINAL_ACCEPTANCE.md). Future hardening: [PHASE12_CHARTER.md](PHASE12_CHARTER.md).
 Date: 2026-07-13
 Scope executed: **GAP A only** (distributed decision bus), per the approved
 `AI_OS/PHASE11C_STAGE3_BATCH1_IMPLEMENTATION_PLAN.md`.
